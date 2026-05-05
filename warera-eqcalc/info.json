@@ -1,0 +1,13 @@
+{
+    "author": ["suyalynx"],
+    "install_msg": "Thanks for installing warera-eqcalc! Use `[p]eqcalc sell` and `[p]eqcalc craft` for equipment recommendations.",
+    "name": "EqCalc",
+    "disabled": false,
+    "short": "Warera equipment sell/craft calculator",
+    "description": "Live equipment sell-vs-dismantle and craft-vs-buy recommendations using real-time Warera market prices.",
+    "tags": ["warera", "game", "economy", "calculator"],
+    "requirements": [],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "type": "COG"
+}
