@@ -9,8 +9,6 @@ from redbot.core import commands, Config
 from redbot.core.bot import Red
 
 # ── Craft constants ────────────────────────────────────────────────────────────
-# Scraps and steel required per grade. Scraps x3 each tier, steel x2 each tier.
-# Choose always requires 2x the steel of Random (same scraps for both).
 GRADES = ("Grey", "Green", "Blue", "Purple", "Gold", "Red")
 
 SCRAPS: dict[str, int] = {
@@ -44,8 +42,45 @@ COIN_PNG: bytes = base64.b64decode(_COIN_B64)
 
 # ── API ────────────────────────────────────────────────────────────────────────
 _API_PRICES = "https://api2.warera.io/trpc/itemTrading.getPrices"
-_CACHE_TTL  = 60  # seconds
+_CACHE_TTL  = 3600  # 1 hour
 
+
+# ── Refresh view ───────────────────────────────────────────────────────────────
+
+class RefreshView(discord.ui.View):
+    """Single-use refresh button attached to sell/craft embeds."""
+
+    def __init__(self, cog: "EqCalc", embed_type: str, colour: discord.Colour):
+        super().__init__(timeout=300)
+        self.cog       = cog
+        self.embed_type = embed_type  # "sell" or "craft"
+        self.colour    = colour
+
+    @discord.ui.button(emoji="\U0001f501", style=discord.ButtonStyle.secondary)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        button.disabled = True
+        await interaction.response.defer()
+
+        try:
+            prices = await self.cog._fetch_prices(force=True)
+        except Exception as e:
+            await interaction.followup.send(f"Gagal refresh: `{e}`", ephemeral=True)
+            await interaction.message.edit(view=self)
+            return
+
+        if self.embed_type == "sell":
+            embed = self.cog._build_sell_embed(prices, self.colour)
+        else:
+            embed = self.cog._build_craft_embed(prices, self.colour)
+
+        await interaction.message.edit(embed=embed, view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+# ── Cog ───────────────────────────────────────────────────────────────────────
 
 class EqCalc(commands.Cog):
     """Warera equipment sell/craft calculator using live market prices."""
@@ -58,8 +93,7 @@ class EqCalc(commands.Cog):
 
         self._price_cache: Optional[dict] = None
         self._cache_time: float = 0.0
-        # Maps (guild_id, user_id, command_name) -> last-used monotonic timestamp
-        self._cooldowns: dict[tuple[int, int, str], float] = {}
+        self._cooldowns: dict[tuple[int, str], float] = {}
 
     async def cog_unload(self):
         pass
@@ -70,34 +104,26 @@ class EqCalc(commands.Cog):
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     async def _check_cooldown(self, ctx: commands.Context, cmd: str) -> Optional[float]:
-        """Return remaining cooldown seconds, or None if the channel is clear."""
         if ctx.guild is None:
             return None
         cd = await self.config.guild(ctx.guild).cooldown_seconds()
         if not cd:
             return None
         key = (ctx.channel.id, cmd)
-        last = self._cooldowns.get(key, 0.0)
-        remaining = cd - (time.monotonic() - last)
-        if remaining > 0:
-            return remaining
-        return None
+        remaining = cd - (time.monotonic() - self._cooldowns.get(key, 0.0))
+        return remaining if remaining > 0 else None
 
     def _mark_used(self, ctx: commands.Context, cmd: str) -> None:
         if ctx.guild is not None:
             self._cooldowns[(ctx.channel.id, cmd)] = time.monotonic()
 
-    async def _fetch_prices(self) -> dict:
-        """Return cached or freshly fetched prices from itemTrading.getPrices."""
+    async def _fetch_prices(self, force: bool = False) -> dict:
         now = time.monotonic()
-        if self._price_cache and (now - self._cache_time) < _CACHE_TTL:
+        if not force and self._price_cache and (now - self._cache_time) < _CACHE_TTL:
             return self._price_cache
 
         api_key = await self.config.api_key()
-        headers = {
-            "Origin":  "https://app.warera.io",
-            "Referer": "https://app.warera.io/",
-        }
+        headers = {"Origin": "https://app.warera.io", "Referer": "https://app.warera.io/"}
         if api_key:
             headers["X-API-Key"] = api_key
 
@@ -106,8 +132,7 @@ class EqCalc(commands.Cog):
                 _API_PRICES, timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 resp.raise_for_status()
-                envelope = await resp.json()
-                data = envelope["result"]["data"]
+                data = (await resp.json())["result"]["data"]
 
         self._price_cache = data
         self._cache_time  = now
@@ -116,8 +141,8 @@ class EqCalc(commands.Cog):
     def _cache_age_str(self) -> str:
         age = int(time.monotonic() - self._cache_time)
         if age < 60:
-            return f"{age}s lalu"
-        return f"{age // 60}m lalu"
+            return f"{age} detik lalu"
+        return f"{age // 60} menit lalu"
 
     @staticmethod
     def _fmt_g(value: float) -> str:
@@ -125,40 +150,82 @@ class EqCalc(commands.Cog):
 
     def _sell_table(self, scrap_price: float) -> str:
         rows = [(g, SCRAPS[g], SCRAPS[g] * scrap_price) for g in GRADES]
-
         cg = max(len(g) for g in GRADES)
         cs = max(len(str(r[1])) for r in rows)
         cd = max(len(self._fmt_g(r[2])) for r in rows)
-
         header = f" {'Grade':<{cg}}  {'Scraps':>{cs}}  {'Nilai Dismantle':>{cd}}"
-        sep    = "─" * len(header)
-        lines  = [header, sep]
+        lines  = [header, "─" * len(header)]
         for grade, scraps, dismantle in rows:
-            lines.append(
-                f" {grade:<{cg}}  {scraps:>{cs}}  {self._fmt_g(dismantle):>{cd}}"
-            )
+            lines.append(f" {grade:<{cg}}  {scraps:>{cs}}  {self._fmt_g(dismantle):>{cd}}")
         return "\n".join(lines)
 
     def _craft_table(self, scrap_price: float, steel_price: float) -> str:
-        rows = []
-        for g in GRADES:
-            r = (SCRAPS[g] * scrap_price) + (STEEL_RANDOM[g] * steel_price)
-            c = (SCRAPS[g] * scrap_price) + (STEEL_CHOOSE[g] * steel_price)
-            rows.append((g, r, c))
-
+        rows = [
+            (g,
+             (SCRAPS[g] * scrap_price) + (STEEL_RANDOM[g] * steel_price),
+             (SCRAPS[g] * scrap_price) + (STEEL_CHOOSE[g] * steel_price))
+            for g in GRADES
+        ]
         cg = max(len(g) for g in GRADES)
         cr = max(len(self._fmt_g(r[1])) for r in rows)
         cc = max(len(self._fmt_g(r[2])) for r in rows)
-
         header = f" {'Grade':<{cg}}  {'Random':>{cr}}  {'Choose':>{cc}}"
-        sep    = "─" * len(header)
-        lines  = [header, sep]
+        lines  = [header, "─" * len(header)]
         for grade, rand_cost, choose_cost in rows:
             lines.append(
-                f" {grade:<{cg}}  {self._fmt_g(rand_cost):>{cr}}  "
-                f"{self._fmt_g(choose_cost):>{cc}}"
+                f" {grade:<{cg}}  {self._fmt_g(rand_cost):>{cr}}  {self._fmt_g(choose_cost):>{cc}}"
             )
         return "\n".join(lines)
+
+    def _build_sell_embed(self, prices: dict, colour: discord.Colour) -> discord.Embed:
+        scrap_price = prices["scraps"]
+        embed = discord.Embed(
+            title="⚔️  Equipment — Jual vs Dismantle",
+            description=f"```\n{self._sell_table(scrap_price)}\n```",
+            colour=colour,
+        )
+        embed.add_field(
+            name="Cara baca",
+            value=(
+                "**Nilai Dismantle** = hasil kalau equipment di-dismantle lalu jual scrapnya\n"
+                "Harga jual di market **> nilai** → jual utuh\n"
+                "Harga jual di market **≤ nilai** → dismantle dulu"
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=f"scraps {self._fmt_g(scrap_price)}  ·  data {self._cache_age_str()}",
+            icon_url="attachment://coin.png",
+        )
+        return embed
+
+    def _build_craft_embed(self, prices: dict, colour: discord.Colour) -> discord.Embed:
+        scrap_price = prices["scraps"]
+        steel_price = prices["steel"]
+        embed = discord.Embed(
+            title="\U0001f528  Equipment — Craft vs Beli",
+            description=f"```\n{self._craft_table(scrap_price, steel_price)}\n```",
+            colour=colour,
+        )
+        embed.add_field(
+            name="Cara baca",
+            value=(
+                "Nilai = biaya kalau kalian beli scraps & steel dari pasar lalu craft sendiri\n"
+                "**Random** = roll 6 jenis equipment  ·  "
+                "**Choose** = pilih jenis, steel 2× lipat\n\n"
+                "Ketemu di market **lebih mahal** dari nilai → craft sendiri lebih hemat\n"
+                "Ketemu di market **lebih murah** dari nilai → beli langsung di market"
+            ),
+            inline=False,
+        )
+        embed.set_footer(
+            text=(
+                f"scraps {self._fmt_g(scrap_price)}  ·  "
+                f"steel {self._fmt_g(steel_price)}  ·  data {self._cache_age_str()}"
+            ),
+            icon_url="attachment://coin.png",
+        )
+        return embed
 
     @staticmethod
     def _coin_file() -> discord.File:
@@ -179,7 +246,7 @@ class EqCalc(commands.Cog):
         remaining = await self._check_cooldown(ctx, "sell")
         if remaining:
             await ctx.send(
-                f"Tunggu **{remaining:.0f}s** lagi sebelum menggunakan perintah ini.",
+                f"Tunggu **{remaining:.0f} detik** lagi sebelum menggunakan perintah ini.",
                 delete_after=remaining,
             )
             return
@@ -192,27 +259,12 @@ class EqCalc(commands.Cog):
                 return
 
         self._mark_used(ctx, "sell")
-
-        scrap_price = prices["scraps"]
-        embed = discord.Embed(
-            title="⚔️  Equipment — Jual vs Dismantle",
-            description=f"```\n{self._sell_table(scrap_price)}\n```",
-            colour=await ctx.embed_colour(),
+        colour = await ctx.embed_colour()
+        await ctx.send(
+            embed=self._build_sell_embed(prices, colour),
+            file=self._coin_file(),
+            view=RefreshView(self, "sell", colour),
         )
-        embed.add_field(
-            name="Cara baca",
-            value=(
-                "**Nilai Dismantle** = hasil kalau equipment di-dismantle lalu jual scrapnya\n"
-                "Harga jual di market **> nilai** → jual utuh\n"
-                "Harga jual di market **≤ nilai** → dismantle dulu"
-            ),
-            inline=False,
-        )
-        embed.set_footer(
-            text=f"scraps {self._fmt_g(scrap_price)}  ·  data {self._cache_age_str()}",
-            icon_url="attachment://coin.png",
-        )
-        await ctx.send(embed=embed, file=self._coin_file())
 
     @eqcalc.command(name="craft")
     @commands.guild_only()
@@ -221,7 +273,7 @@ class EqCalc(commands.Cog):
         remaining = await self._check_cooldown(ctx, "craft")
         if remaining:
             await ctx.send(
-                f"Tunggu **{remaining:.0f}s** lagi sebelum menggunakan perintah ini.",
+                f"Tunggu **{remaining:.0f} detik** lagi sebelum menggunakan perintah ini.",
                 delete_after=remaining,
             )
             return
@@ -234,33 +286,12 @@ class EqCalc(commands.Cog):
                 return
 
         self._mark_used(ctx, "craft")
-
-        scrap_price = prices["scraps"]
-        steel_price = prices["steel"]
-        embed = discord.Embed(
-            title="\U0001f528  Equipment — Craft vs Beli",
-            description=f"```\n{self._craft_table(scrap_price, steel_price)}\n```",
-            colour=await ctx.embed_colour(),
+        colour = await ctx.embed_colour()
+        await ctx.send(
+            embed=self._build_craft_embed(prices, colour),
+            file=self._coin_file(),
+            view=RefreshView(self, "craft", colour),
         )
-        embed.add_field(
-            name="Cara baca",
-            value=(
-                "Nilai = biaya kalau kalian beli scraps & steel dari pasar lalu craft sendiri\n"
-                "**Random** = roll 6 jenis equipment  ·  "
-                "**Choose** = pilih jenis, steel 2× lipat\n\n"
-                "Ketemu di market **lebih mahal** dari nilai → craft sendiri lebih hemat\n"
-                "Ketemu di market **lebih murah** dari nilai → beli langsung di market"
-            ),
-            inline=False,
-        )
-        embed.set_footer(
-            text=(
-                f"scraps {self._fmt_g(scrap_price)}  ·  "
-                f"steel {self._fmt_g(steel_price)}  ·  data {self._cache_age_str()}"
-            ),
-            icon_url="attachment://coin.png",
-        )
-        await ctx.send(embed=embed, file=self._coin_file())
 
     @eqcalc.command(name="api")
     @commands.is_owner()
@@ -296,4 +327,4 @@ class EqCalc(commands.Cog):
         if seconds == 0:
             await ctx.send("✅ Cooldown dimatikan.")
         else:
-            await ctx.send(f"✅ Cooldown di-set ke **{seconds}s** per channel.")
+            await ctx.send(f"✅ Cooldown di-set ke **{seconds} detik** per channel.")
