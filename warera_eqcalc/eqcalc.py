@@ -70,11 +70,13 @@ class EqCalc(commands.Cog):
     # ── Internal helpers ───────────────────────────────────────────────────────
 
     async def _check_cooldown(self, ctx: commands.Context, cmd: str) -> Optional[float]:
-        """Return remaining cooldown seconds, or None if the user is clear."""
+        """Return remaining cooldown seconds, or None if the channel is clear."""
+        if ctx.guild is None:
+            return None
         cd = await self.config.guild(ctx.guild).cooldown_seconds()
         if not cd:
             return None
-        key = (ctx.guild.id, ctx.author.id, cmd)
+        key = (ctx.channel.id, cmd)
         last = self._cooldowns.get(key, 0.0)
         remaining = cd - (time.monotonic() - last)
         if remaining > 0:
@@ -82,7 +84,8 @@ class EqCalc(commands.Cog):
         return None
 
     def _mark_used(self, ctx: commands.Context, cmd: str) -> None:
-        self._cooldowns[(ctx.guild.id, ctx.author.id, cmd)] = time.monotonic()
+        if ctx.guild is not None:
+            self._cooldowns[(ctx.channel.id, cmd)] = time.monotonic()
 
     async def _fetch_prices(self) -> dict:
         """Return cached or freshly fetched prices from itemTrading.getPrices."""
@@ -166,7 +169,8 @@ class EqCalc(commands.Cog):
     @commands.group(invoke_without_command=True)
     async def eqcalc(self, ctx: commands.Context):
         """Warera equipment calculator. Use `sell` or `craft` subcommands."""
-        await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
 
     @eqcalc.command(name="sell")
     async def eqcalc_sell(self, ctx: commands.Context):
