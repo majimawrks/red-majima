@@ -118,7 +118,7 @@ class EqCalc(commands.Cog):
 
     @staticmethod
     def _fmt_g(value: float) -> str:
-        return f"g {value:,.2f}"
+        return f"{value:,.2f} g"
 
     def _sell_table(self, scrap_price: float) -> str:
         rows = [(g, SCRAPS[g], SCRAPS[g] * scrap_price) for g in GRADES]
