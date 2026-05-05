@@ -173,6 +173,7 @@ class EqCalc(commands.Cog):
             await ctx.send_help(ctx.command)
 
     @eqcalc.command(name="sell")
+    @commands.guild_only()
     async def eqcalc_sell(self, ctx: commands.Context):
         """Show whether to sell equipment whole or dismantle it first."""
         remaining = await self._check_cooldown(ctx, "sell")
@@ -214,6 +215,7 @@ class EqCalc(commands.Cog):
         await ctx.send(embed=embed, file=self._coin_file())
 
     @eqcalc.command(name="craft")
+    @commands.guild_only()
     async def eqcalc_craft(self, ctx: commands.Context):
         """Show whether to craft equipment or buy it from the market."""
         remaining = await self._check_cooldown(ctx, "craft")
@@ -281,17 +283,11 @@ class EqCalc(commands.Cog):
             pass
         await ctx.send("✅ API key tersimpan.", delete_after=5)
 
-    # ── eqcalc set subgroup ────────────────────────────────────────────────────
-
-    @eqcalc.group(name="set")
+    @eqcalc.command(name="setcd")
+    @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
-    async def eqcalc_set(self, ctx: commands.Context):
-        """Configure eqcalc settings for this server."""
-        await ctx.send_help(ctx.command)
-
-    @eqcalc_set.command(name="cd")
-    async def eqcalc_set_cd(self, ctx: commands.Context, seconds: int = 0):
-        """Set the per-user cooldown for sell/craft commands (in seconds, 0 = off)."""
+    async def eqcalc_setcd(self, ctx: commands.Context, seconds: int = 0):
+        """Set the per-channel cooldown for sell/craft commands (in seconds, 0 = off)."""
         if seconds < 0:
             await ctx.send("Cooldown tidak boleh negatif.")
             return
@@ -300,4 +296,4 @@ class EqCalc(commands.Cog):
         if seconds == 0:
             await ctx.send("✅ Cooldown dimatikan.")
         else:
-            await ctx.send(f"✅ Cooldown di-set ke **{seconds}s** per pengguna.")
+            await ctx.send(f"✅ Cooldown di-set ke **{seconds}s** per channel.")
