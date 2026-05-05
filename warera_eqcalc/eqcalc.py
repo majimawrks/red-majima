@@ -273,7 +273,7 @@ class EqCalc(commands.Cog):
         self._price_cache = None
         try:
             await ctx.message.delete()
-        except discord.Forbidden:
+        except (discord.Forbidden, discord.HTTPException):
             pass
         await ctx.send("✅ API key tersimpan.", delete_after=5)
 
