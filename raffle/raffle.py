@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import random
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import discord
+from redbot.core import Config, commands, data_manager
+from redbot.core.bot import Red
+
+from .utils import format_end_time, parse_duration, pick_winners, validate_emoji, validate_timezone
+from .views import (
+    RaffleCancelConfirmView,
+    RaffleConfirmView,
+    RaffleSelectView,
+    RaffleSetupModal,
+    RaffleTypeView,
+    ResetConfirmView,
+    TimezoneModal,
+    _ModalTriggerView,
+)
+
+IDENTIFIER = 748392015
+
+
+class Raffle(commands.Cog):
+    """Reaction-based raffle system with wizard setup."""
+
+    def __init__(self, bot: Red):
+        self.bot = bot
+        self.config = Config.get_conf(self, identifier=IDENTIFIER, force_registration=True)
+        self.config.register_guild(
+            open=True,
+            multi=True,
+            allowed_roles=[],
+            allowed_members=[],
+            timezone="UTC",
+            raffles={},
+        )
+        # G1: keyed by (guild_id, message_id) tuple
+        self._draw_tasks: dict[tuple[int, int], asyncio.Task] = {}
+        self._history_base: Optional[Path] = None
+
+    async def cog_load(self):
+        self._history_base = data_manager.cog_data_path(self) / "history"
+        self._history_base.mkdir(parents=True, exist_ok=True)
+        await self._reschedule_tasks()
+
+    async def cog_unload(self):
+        for task in self._draw_tasks.values():
+            task.cancel()
+
+    async def red_delete_data_for_user(self, *, requester, user_id: int):
+        all_guilds = await self.config.all_guilds()
+        for guild_id, guild_data in all_guilds.items():
+            raffles = guild_data.get("raffles", {})
+            changed = False
+            for raffle in raffles.values():
+                if user_id in raffle.get("participants", []):
+                    raffle["participants"].remove(user_id)
+                    changed = True
+                if user_id in raffle.get("winners", []):
+                    raffle["winners"].remove(user_id)
+                    changed = True
+            if changed:
+                guild = self.bot.get_guild(guild_id)
+                if guild:
+                    await self.config.guild(guild).raffles.set(raffles)
+
+    # ── History archival (G8) ─────────────────────────────────────────
+
+    def _history_dir(self, guild_id: int) -> Path:
+        d = self._history_base / str(guild_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _archive_raffle(self, guild_id: int, message_id: str, entry: dict):
+        """Append a completed/cancelled raffle to the monthly history file."""
+        now = datetime.now(timezone.utc)
+        filename = now.strftime("%Y-%m") + ".json"
+        path = self._history_dir(guild_id) / filename
+        history = []
+        if path.exists():
+            try:
+                history = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                history = []
+        entry_copy = dict(entry)
+        entry_copy["message_id"] = message_id
+        entry_copy["archived_at"] = now.isoformat()
+        history.append(entry_copy)
+        path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+    # ── Task scheduling (G2, G3) ──────────────────────────────────────
+
+    async def _reschedule_tasks(self):
+        """Restore auto-draw and manual-notify tasks after bot restart."""
+        pass  # Implemented in Task 8
+
+    async def _get_bot_prefix(self, guild: discord.Guild) -> str:
+        """Get the first valid prefix for DM messages (G6)."""
+        prefixes = await self.bot.get_valid_prefixes(guild)
+        return prefixes[0] if prefixes else "!"

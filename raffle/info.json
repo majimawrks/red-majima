@@ -1,0 +1,13 @@
+{
+    "author": ["skeith"],
+    "install_msg": "Thanks for installing Raffle! Use [p]setraffle to configure and [p]raffle start to run one.",
+    "name": "Raffle",
+    "disabled": false,
+    "short": "Reaction-based raffle system with wizard setup",
+    "description": "Run guild raffles with reaction entry, configurable duration, auto or manual winner draw, and per-guild access control.",
+    "tags": ["fun", "utility", "giveaway"],
+    "requirements": ["pytz"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "type": "COG"
+}
