@@ -1,5 +1,5 @@
 {
-    "author": ["skeith"],
+    "author": ["majimawrks"],
     "install_msg": "Thanks for installing Raffle! Use [p]setraffle to configure and [p]raffle start to run one.",
     "name": "Raffle",
     "disabled": false,
