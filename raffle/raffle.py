@@ -180,3 +180,14 @@ class Raffle(commands.Cog):
             f"Added to allowed members: {names}",
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+    @setraffle.command(name="tzconf")
+    async def setraffle_tzconf(self, ctx: commands.Context):
+        """Set the guild timezone used for displaying raffle end times."""
+        view = _ModalTriggerView(
+            TimezoneModal(self, ctx),
+            label="Set Timezone",
+            author_id=ctx.author.id,
+        )
+        msg = await ctx.send("Click to set timezone:", view=view)
+        view.message = msg

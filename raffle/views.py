@@ -53,7 +53,34 @@ class RaffleCancelConfirmView(discord.ui.View):
 
 
 class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
-    pass
+    tz_input = discord.ui.TextInput(
+        label="Timezone",
+        placeholder="e.g. Asia/Jakarta, US/Eastern, UTC",
+        min_length=2,
+        max_length=50,
+    )
+
+    def __init__(self, cog, ctx):
+        super().__init__()
+        self.cog = cog
+        self.ctx = ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Deferred import to avoid circular: views.py <- raffle.py <- views.py
+        from .utils import validate_timezone
+
+        value = self.tz_input.value.strip()
+        if not validate_timezone(value):
+            await interaction.response.send_message(
+                f"❌ `{value}` is not a valid timezone. "
+                "Use IANA format like `Asia/Jakarta` or `UTC`.",
+                ephemeral=True,
+            )
+            return
+        await self.cog.config.guild(self.ctx.guild).timezone.set(value)
+        await interaction.response.send_message(
+            f"✅ Timezone set to **{value}**.", ephemeral=True
+        )
 
 
 class ResetConfirmView(discord.ui.View):
