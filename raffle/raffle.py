@@ -191,3 +191,21 @@ class Raffle(commands.Cog):
         )
         msg = await ctx.send("Click to set timezone:", view=view)
         view.message = msg
+
+    _RESET_TARGETS = {"base", "multi", "role", "member", "tz", "all"}
+
+    @setraffle.command(name="reset")
+    async def setraffle_reset(self, ctx: commands.Context, target: str = "all"):
+        """Reset a setting or all settings to defaults.
+
+        Targets: base, multi, role, member, tz, all
+        """
+        target = target.lower()
+        if target not in self._RESET_TARGETS:
+            await ctx.maybe_send_embed(
+                f"Unknown target `{target}`. Choose from: {', '.join(sorted(self._RESET_TARGETS))}"
+            )
+            return
+        view = ResetConfirmView(self, ctx, target)
+        msg = await ctx.send(f"Reset **{target}** to defaults. Are you sure?", view=view)
+        view.message = msg

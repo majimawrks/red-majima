@@ -84,4 +84,43 @@ class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
 
 
 class ResetConfirmView(discord.ui.View):
-    pass
+    def __init__(self, cog, ctx, target: str):
+        super().__init__(timeout=30)
+        self.cog = cog
+        self.ctx = ctx
+        self.target = target
+        self.message: Optional[discord.Message] = None
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Not your reset.", ephemeral=True)
+            return
+        cfg = self.cog.config.guild(self.ctx.guild)
+        t = self.target
+        if t in ("role", "all"):
+            await cfg.allowed_roles.set([])
+        if t in ("member", "all"):
+            await cfg.allowed_members.set([])
+        if t in ("tz", "all"):
+            await cfg.timezone.set("UTC")
+        if t in ("base", "all"):
+            await cfg.open.set(True)
+        if t in ("multi", "all"):
+            await cfg.multi.set(True)
+        await interaction.response.edit_message(
+            content=f"✅ Reset **{self.target}** to defaults.", view=None
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Reset cancelled.", view=None)
+        self.stop()
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(content="Reset timed out.", view=None)
+            except discord.HTTPException:
+                pass
