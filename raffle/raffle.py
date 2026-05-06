@@ -148,3 +148,35 @@ class Raffle(commands.Cog):
         await self.config.guild(ctx.guild).multi.set(not current)
         state = "**enabled**" if not current else "**disabled**"
         await ctx.maybe_send_embed(f"Multi-raffle {state}.")
+
+    @setraffle.command(name="roleconf")
+    async def setraffle_roleconf(self, ctx: commands.Context, *roles: discord.Role):
+        """Append one or more roles to the allowed-starters list."""
+        if not roles:
+            await ctx.maybe_send_embed("Provide at least one role mention.")
+            return
+        async with self.config.guild(ctx.guild).allowed_roles() as lst:
+            for role in roles:
+                if role.id not in lst:
+                    lst.append(role.id)
+        names = ", ".join(r.mention for r in roles)
+        await ctx.send(
+            f"Added to allowed roles: {names}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @setraffle.command(name="memberconf")
+    async def setraffle_memberconf(self, ctx: commands.Context, *members: discord.Member):
+        """Append one or more members to the allowed-starters list."""
+        if not members:
+            await ctx.maybe_send_embed("Provide at least one member mention.")
+            return
+        async with self.config.guild(ctx.guild).allowed_members() as lst:
+            for member in members:
+                if member.id not in lst:
+                    lst.append(member.id)
+        names = ", ".join(m.mention for m in members)
+        await ctx.send(
+            f"Added to allowed members: {names}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
