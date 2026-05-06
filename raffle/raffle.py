@@ -105,3 +105,46 @@ class Raffle(commands.Cog):
         """Get the first valid prefix for DM messages (G6)."""
         prefixes = await self.bot.get_valid_prefixes(guild)
         return prefixes[0] if prefixes else "!"
+
+    # ── setraffle ─────────────────────────────────────────────────────
+
+    @commands.group(name="setraffle")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_channels=True, moderate_members=True)
+    async def setraffle(self, ctx: commands.Context):
+        """Configure the raffle system."""
+
+    @setraffle.command(name="allconf")
+    async def setraffle_allconf(self, ctx: commands.Context):
+        """Show all current raffle settings."""
+        cfg = await self.config.guild(ctx.guild).all()
+        allowed_roles = [ctx.guild.get_role(r) for r in cfg["allowed_roles"]]
+        allowed_members = [ctx.guild.get_member(m) for m in cfg["allowed_members"]]
+        role_str = ", ".join(r.mention for r in allowed_roles if r) or "None"
+        member_str = ", ".join(m.mention for m in allowed_members if m) or "None"
+        active = sum(1 for r in cfg["raffles"].values() if r["status"] == "active")
+
+        embed = discord.Embed(title="Raffle Settings", colour=await ctx.embed_colour())
+        embed.add_field(name="Mode", value="Open" if cfg["open"] else "Closed", inline=True)
+        embed.add_field(name="Multi-raffle", value="Enabled" if cfg["multi"] else "Disabled", inline=True)
+        embed.add_field(name="Timezone", value=cfg["timezone"], inline=True)
+        embed.add_field(name="Allowed Roles", value=role_str, inline=False)
+        embed.add_field(name="Allowed Members", value=member_str, inline=False)
+        embed.set_footer(text=f"{active} active raffle(s)")
+        await ctx.send(embed=embed)
+
+    @setraffle.command(name="baseconf")
+    async def setraffle_baseconf(self, ctx: commands.Context):
+        """Toggle open (anyone starts) vs closed (role/member list only) mode."""
+        current = await self.config.guild(ctx.guild).open()
+        await self.config.guild(ctx.guild).open.set(not current)
+        mode = "**Open**" if not current else "**Closed**"
+        await ctx.maybe_send_embed(f"Raffle mode set to {mode}.")
+
+    @setraffle.command(name="multiconf")
+    async def setraffle_multiconf(self, ctx: commands.Context):
+        """Toggle whether multiple raffles can run concurrently in different channels."""
+        current = await self.config.guild(ctx.guild).multi()
+        await self.config.guild(ctx.guild).multi.set(not current)
+        state = "**enabled**" if not current else "**disabled**"
+        await ctx.maybe_send_embed(f"Multi-raffle {state}.")
