@@ -415,21 +415,23 @@ class Raffle(commands.Cog):
         guild = self.bot.get_guild(payload.guild_id)
         if not guild:
             return
-        raffles = await self.config.guild(guild).raffles()
         key = str(payload.message_id)
-        if key not in raffles:
-            return
-        entry = raffles[key]
-        if entry["status"] != "active":
-            return
-        if str(payload.emoji) != entry["emoji"]:
-            return
-        if payload.user_id in entry["participants"]:
-            return
-        entry["participants"].append(payload.user_id)
+        # Hold the Config lock for the entire read-check-write to prevent
+        # concurrent reaction handlers from overwriting each other's updates.
+        async with self.config.guild(guild).raffles() as raffles:
+            if key not in raffles:
+                return
+            entry = raffles[key]
+            if entry["status"] != "active":
+                return
+            if str(payload.emoji) != entry["emoji"]:
+                return
+            if payload.user_id in entry["participants"]:
+                return
+            entry["participants"].append(payload.user_id)
+            raffles[key] = entry
+        # Update the embed footer outside the lock (network I/O)
         await self._update_participant_count(guild, payload.channel_id, payload.message_id, entry)
-        async with self.config.guild(guild).raffles() as r:
-            r[key] = entry
 
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
@@ -438,21 +440,20 @@ class Raffle(commands.Cog):
         guild = self.bot.get_guild(payload.guild_id)
         if not guild:
             return
-        raffles = await self.config.guild(guild).raffles()
         key = str(payload.message_id)
-        if key not in raffles:
-            return
-        entry = raffles[key]
-        if entry["status"] != "active":
-            return
-        if str(payload.emoji) != entry["emoji"]:
-            return
-        if payload.user_id not in entry["participants"]:
-            return
-        entry["participants"].remove(payload.user_id)
+        async with self.config.guild(guild).raffles() as raffles:
+            if key not in raffles:
+                return
+            entry = raffles[key]
+            if entry["status"] != "active":
+                return
+            if str(payload.emoji) != entry["emoji"]:
+                return
+            if payload.user_id not in entry["participants"]:
+                return
+            entry["participants"].remove(payload.user_id)
+            raffles[key] = entry
         await self._update_participant_count(guild, payload.channel_id, payload.message_id, entry)
-        async with self.config.guild(guild).raffles() as r:
-            r[key] = entry
 
     async def _update_participant_count(
         self,
