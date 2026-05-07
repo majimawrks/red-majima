@@ -151,9 +151,13 @@ class Raffle(commands.Cog):
 
     @setraffle.command(name="roleconf")
     async def setraffle_roleconf(self, ctx: commands.Context, *roles: discord.Role):
-        """Append one or more roles to the allowed-starters list."""
+        """Append one or more roles to the allowed-starters list.
+
+        Accepts role mentions, role names, or role IDs.
+        Example: [p]setraffle roleconf @Mods 123456789 VIPs
+        """
         if not roles:
-            await ctx.maybe_send_embed("Provide at least one role mention.")
+            await ctx.maybe_send_embed("Provide at least one role (mention, name, or ID).")
             return
         async with self.config.guild(ctx.guild).allowed_roles() as lst:
             for role in roles:
@@ -167,9 +171,13 @@ class Raffle(commands.Cog):
 
     @setraffle.command(name="memberconf")
     async def setraffle_memberconf(self, ctx: commands.Context, *members: discord.Member):
-        """Append one or more members to the allowed-starters list."""
+        """Append one or more members to the allowed-starters list.
+
+        Accepts member mentions, usernames, or user IDs.
+        Example: [p]setraffle memberconf @alice 123456789
+        """
         if not members:
-            await ctx.maybe_send_embed("Provide at least one member mention.")
+            await ctx.maybe_send_embed("Provide at least one member (mention, username, or ID).")
             return
         async with self.config.guild(ctx.guild).allowed_members() as lst:
             for member in members:
