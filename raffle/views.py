@@ -33,15 +33,157 @@ class _ModalTriggerView(discord.ui.View):
 
 
 class RaffleSetupModal(discord.ui.Modal, title="Start a Raffle"):
-    pass
+    name_input = discord.ui.TextInput(
+        label="Raffle Name",
+        placeholder="e.g. Summer Giveaway",
+        min_length=1,
+        max_length=80,
+    )
+    emoji_input = discord.ui.TextInput(
+        label="Entry Emoji",
+        placeholder="e.g. 🎉 or <:custom:123456>",
+        min_length=1,
+        max_length=30,
+    )
+    duration_input = discord.ui.TextInput(
+        label="Duration",
+        placeholder="e.g. 2h, 1d, 30m",
+        min_length=2,
+        max_length=6,
+    )
+    winners_input = discord.ui.TextInput(
+        label="Number of Winners",
+        placeholder="e.g. 1",
+        min_length=1,
+        max_length=3,
+    )
+
+    def __init__(self, cog, ctx):
+        super().__init__()
+        self.cog = cog
+        self.ctx = ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from .utils import parse_duration, validate_emoji
+
+        name = self.name_input.value.strip()
+        emoji = self.emoji_input.value.strip()
+        raw_duration = self.duration_input.value.strip()
+        raw_winners = self.winners_input.value.strip()
+
+        # G4: validate emoji
+        if not validate_emoji(emoji):
+            await interaction.response.send_message(
+                "❌ Invalid emoji. Use a Unicode emoji (🎉) or custom emoji (<:name:id>).",
+                ephemeral=True,
+            )
+            return
+
+        duration = parse_duration(raw_duration)
+        if duration is None:
+            await interaction.response.send_message(
+                "❌ Invalid duration. Use formats like `2h`, `1d`, `30m`.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            winner_count = int(raw_winners)
+            if winner_count < 1:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Winners must be a positive integer.", ephemeral=True
+            )
+            return
+
+        view = RaffleTypeView(self.cog, self.ctx, name, emoji, duration, winner_count)
+        await interaction.response.send_message(
+            "**Step 2 — Pick winner method:**", view=view, ephemeral=True
+        )
 
 
 class RaffleTypeView(discord.ui.View):
-    pass
+    def __init__(self, cog, ctx, name: str, emoji: str, duration, winner_count: int):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.ctx = ctx
+        self.name = name
+        self.emoji = emoji
+        self.duration = duration
+        self.winner_count = winner_count
+
+    @discord.ui.select(
+        placeholder="Pick winner method...",
+        options=[
+            discord.SelectOption(
+                label="Auto — bot draws on expiry",
+                value="auto",
+                emoji="⏰",
+            ),
+            discord.SelectOption(
+                label="Manual — creator triggers draw",
+                value="manual",
+                emoji="🖐️",
+            ),
+        ],
+    )
+    async def select_type(self, interaction: discord.Interaction, select: discord.ui.Select):
+        draw_type = select.values[0]
+        view = RaffleConfirmView(
+            self.cog, self.ctx, self.name, self.emoji,
+            self.duration, self.winner_count, draw_type,
+        )
+        embed = await view.build_embed()
+        await interaction.response.edit_message(content=None, embed=embed, view=view)
+        self.stop()
 
 
 class RaffleConfirmView(discord.ui.View):
-    pass
+    def __init__(self, cog, ctx, name: str, emoji: str, duration, winner_count: int, draw_type: str):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.ctx = ctx
+        self.name = name
+        self.emoji = emoji
+        self.duration = duration
+        self.winner_count = winner_count
+        self.draw_type = draw_type
+
+    async def build_embed(self) -> discord.Embed:
+        import time
+        from .utils import format_end_time
+
+        tz_name = await self.cog.config.guild(self.ctx.guild).timezone()
+        end_ts = time.time() + self.duration.total_seconds()
+        end_str = format_end_time(end_ts, tz_name)
+        colour = await self.ctx.embed_colour()
+        embed = discord.Embed(title="📋 Confirm Raffle", colour=colour)
+        embed.add_field(name="Name", value=self.name, inline=True)
+        embed.add_field(name="Emoji", value=self.emoji, inline=True)
+        embed.add_field(name="Duration", value=f"Ends {end_str}", inline=False)
+        embed.add_field(name="Winners", value=str(self.winner_count), inline=True)
+        embed.add_field(name="Method", value=self.draw_type.capitalize(), inline=True)
+        return embed
+
+    @discord.ui.button(label="✅ Start", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Not your raffle.", ephemeral=True)
+            return
+        await interaction.response.edit_message(content="Starting raffle...", embed=None, view=None)
+        await self.cog._launch_raffle(
+            self.ctx, self.name, self.emoji,
+            self.duration, self.winner_count, self.draw_type,
+        )
+        self.stop()
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(
+            content="Raffle setup cancelled.", embed=None, view=None
+        )
+        self.stop()
 
 
 class RaffleSelectView(discord.ui.View):

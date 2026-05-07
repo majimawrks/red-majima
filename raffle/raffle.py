@@ -209,3 +209,54 @@ class Raffle(commands.Cog):
         view = ResetConfirmView(self, ctx, target)
         msg = await ctx.send(f"Reset **{target}** to defaults. Are you sure?", view=view)
         view.message = msg
+
+    # ── raffle ────────────────────────────────────────────────────────
+
+    @commands.group(name="raffle", invoke_without_command=False)
+    @commands.guild_only()
+    async def raffle(self, ctx: commands.Context):
+        """Raffle commands."""
+
+    @raffle.command(name="start")
+    async def raffle_start(self, ctx: commands.Context):
+        """Open the raffle setup wizard."""
+        if not await self._can_start(ctx):
+            await ctx.maybe_send_embed("You don't have permission to start a raffle.")
+            return
+        if not await self._slot_available(ctx):
+            await ctx.maybe_send_embed(
+                "A raffle is already running in this guild. "
+                "Enable multi-raffle (`setraffle multiconf`) or wait for it to end."
+            )
+            return
+        view = _ModalTriggerView(
+            RaffleSetupModal(self, ctx),
+            label="Set Up Raffle",
+            author_id=ctx.author.id,
+        )
+        msg = await ctx.send("Click to start the raffle setup:", view=view)
+        view.message = msg
+
+    async def _can_start(self, ctx: commands.Context) -> bool:
+        """Check if invoker is allowed to start a raffle."""
+        cfg = await self.config.guild(ctx.guild).all()
+        if cfg["open"]:
+            return True
+        # Closed mode: privileged Discord perms OR whitelist
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_channels or perms.moderate_members:
+            return True
+        if ctx.author.id in cfg["allowed_members"]:
+            return True
+        author_role_ids = {r.id for r in ctx.author.roles}
+        if author_role_ids & set(cfg["allowed_roles"]):
+            return True
+        return False
+
+    async def _slot_available(self, ctx: commands.Context) -> bool:
+        """Check whether a new raffle can start (respects multiconf)."""
+        multi = await self.config.guild(ctx.guild).multi()
+        if multi:
+            return True
+        raffles = await self.config.guild(ctx.guild).raffles()
+        return not any(r["status"] == "active" for r in raffles.values())
