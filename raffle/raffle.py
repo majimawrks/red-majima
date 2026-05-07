@@ -507,11 +507,17 @@ class Raffle(commands.Cog):
         result_channel: where to post the winner embed. Defaults to the
         raffle's own channel (used for auto-draw).
         """
-        raffles = await self.config.guild(guild).raffles()
         key = str(message_id)
-        if key not in raffles or raffles[key]["status"] != "active":
-            return
-        entry = raffles[key]
+
+        # Atomically read the entry and remove it from Config so concurrent
+        # reaction handlers stop writing to it.
+        async with self.config.guild(guild).raffles() as raffles:
+            if key not in raffles or raffles[key]["status"] != "active":
+                return
+            entry = dict(raffles[key])  # snapshot for post-lock work
+            entry["participants"] = list(raffles[key]["participants"])
+            raffles.pop(key, None)
+
         raffle_channel = guild.get_channel(entry["channel_id"])
         if not raffle_channel:
             return
@@ -579,12 +585,10 @@ class Raffle(commands.Cog):
         except discord.HTTPException:
             pass
 
-        # Archive and remove from active Config (G8)
+        # Archive to disk (G8) — entry already removed from Config above
         entry["status"] = "ended"
         entry["winners"] = winner_ids
         self._archive_raffle(guild.id, key, entry)
-        async with self.config.guild(guild).raffles() as r:
-            r.pop(key, None)
 
         self._draw_tasks.pop((guild.id, message_id), None)
 
@@ -731,12 +735,18 @@ class Raffle(commands.Cog):
     ):
         """Execute cancellation: cancel task, edit embed, archive entry."""
         key = str(message_id)
-        raffles = await self.config.guild(guild).raffles()
-        if key not in raffles:
-            await interaction.response.edit_message(content="Raffle not found.", view=None)
-            return
-        entry = raffles[key]
-        entry["status"] = "cancelled"
+
+        # Atomically read, mark cancelled, and remove — prevents a concurrent
+        # reaction handler from writing to a raffle that's about to be popped.
+        async with self.config.guild(guild).raffles() as raffles:
+            if key not in raffles:
+                await interaction.response.edit_message(
+                    content="Raffle not found.", view=None
+                )
+                return
+            entry = dict(raffles[key])  # snapshot for post-lock work
+            entry["status"] = "cancelled"
+            raffles.pop(key, None)
 
         # Respond immediately to avoid Discord's 3-second interaction timeout
         await interaction.response.edit_message(content="✅ Raffle cancelled.", view=None)
@@ -759,10 +769,8 @@ class Raffle(commands.Cog):
             except discord.HTTPException:
                 pass
 
-        # Archive and remove from active Config (G8)
+        # Archive to disk (G8)
         self._archive_raffle(guild.id, key, entry)
-        async with self.config.guild(guild).raffles() as r:
-            r.pop(key, None)
 
     # ── raffle history ────────────────────────────────────────────────
 
