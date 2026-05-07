@@ -669,3 +669,48 @@ class Raffle(commands.Cog):
             r.pop(key, None)
 
         await interaction.response.edit_message(content="✅ Raffle cancelled.", view=None)
+
+    # ── raffle history ────────────────────────────────────────────────
+
+    @raffle.command(name="history")
+    async def raffle_history(self, ctx: commands.Context, month: Optional[str] = None):
+        """Show past raffles from the monthly archive.
+
+        Optionally specify a month in YYYY-MM format (e.g. 2026-05).
+        Defaults to the current month.
+        """
+        if month is None:
+            month = datetime.now(timezone.utc).strftime("%Y-%m")
+        path = self._history_dir(ctx.guild.id) / f"{month}.json"
+        if not path.exists():
+            await ctx.maybe_send_embed(f"No raffle history for **{month}**.")
+            return
+        try:
+            history = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            await ctx.maybe_send_embed("Failed to read history file.")
+            return
+        if not history:
+            await ctx.maybe_send_embed(f"No raffles recorded for **{month}**.")
+            return
+
+        embed = discord.Embed(
+            title=f"Raffle History — {month}",
+            colour=await ctx.embed_colour(),
+        )
+        # Show last 10 entries
+        for entry in history[-10:]:
+            status_icon = "🎉" if entry["status"] == "ended" else "❌"
+            winners = entry.get("winners", [])
+            winners_str = ", ".join(f"<@{w}>" for w in winners) if winners else "None"
+            embed.add_field(
+                name=f"{status_icon} {entry['name']}",
+                value=(
+                    f"Winners: {winners_str}\n"
+                    f"Participants: {len(entry.get('participants', []))}"
+                ),
+                inline=False,
+            )
+        if len(history) > 10:
+            embed.set_footer(text=f"Showing last 10 of {len(history)} raffles")
+        await ctx.send(embed=embed)
