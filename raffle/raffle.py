@@ -608,3 +608,64 @@ class Raffle(commands.Cog):
             view = RaffleSelectView(self, ctx, visible, action="end")
             msg = await ctx.send("Which raffle do you want to draw?", view=view)
             view.message = msg
+
+    @raffle.command(name="cancel")
+    async def raffle_cancel(self, ctx: commands.Context):
+        """Cancel an active raffle."""
+        visible = await self._get_visible_raffles(ctx)
+        if not visible:
+            await ctx.maybe_send_embed("No active raffles to cancel.")
+            return
+        if len(visible) == 1:
+            msg_id = int(next(iter(visible)))
+            entry = next(iter(visible.values()))
+            view = RaffleCancelConfirmView(self, ctx, ctx.guild, msg_id)
+            msg = await ctx.send(
+                f"Cancel raffle **{entry['name']}**? This cannot be undone.", view=view
+            )
+            view.message = msg
+        else:
+            # G7: RaffleSelectView → _RaffleSelectMenu will show RaffleCancelConfirmView
+            view = RaffleSelectView(self, ctx, visible, action="cancel")
+            msg = await ctx.send("Which raffle do you want to cancel?", view=view)
+            view.message = msg
+
+    async def _do_cancel(
+        self,
+        interaction: discord.Interaction,
+        guild: discord.Guild,
+        message_id: int,
+    ):
+        """Execute cancellation: cancel task, edit embed, archive entry."""
+        key = str(message_id)
+        raffles = await self.config.guild(guild).raffles()
+        if key not in raffles:
+            await interaction.response.edit_message(content="Raffle not found.", view=None)
+            return
+        entry = raffles[key]
+        entry["status"] = "cancelled"
+
+        # Cancel any pending scheduled task (G2)
+        task = self._draw_tasks.pop((guild.id, message_id), None)
+        if task:
+            task.cancel()
+
+        # Edit announcement embed
+        channel = guild.get_channel(entry["channel_id"])
+        if channel:
+            try:
+                msg = await channel.fetch_message(message_id)
+                if msg.embeds:
+                    embed = msg.embeds[0].copy()
+                    embed.title = f"❌ {entry['name']} (Cancelled)"
+                    embed.colour = discord.Colour.red()
+                    await msg.edit(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        # Archive and remove from active Config (G8)
+        self._archive_raffle(guild.id, key, entry)
+        async with self.config.guild(guild).raffles() as r:
+            r.pop(key, None)
+
+        await interaction.response.edit_message(content="✅ Raffle cancelled.", view=None)

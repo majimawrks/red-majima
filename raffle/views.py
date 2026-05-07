@@ -250,7 +250,33 @@ class _RaffleSelectMenu(discord.ui.Select):
 
 
 class RaffleCancelConfirmView(discord.ui.View):
-    pass
+    def __init__(self, cog, ctx, guild: discord.Guild, message_id: int):
+        super().__init__(timeout=30)
+        self.cog = cog
+        self.ctx = ctx
+        self.guild = guild
+        self.message_id = message_id
+        self.message: Optional[discord.Message] = None
+
+    @discord.ui.button(label="✅ Confirm Cancel", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Not your action.", ephemeral=True)
+            return
+        await self.cog._do_cancel(interaction, self.guild, self.message_id)
+        self.stop()
+
+    @discord.ui.button(label="Keep Running", style=discord.ButtonStyle.secondary)
+    async def keep(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Cancellation aborted.", view=None)
+        self.stop()
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(content="Cancellation timed out.", view=None)
+            except discord.HTTPException:
+                pass
 
 
 class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
