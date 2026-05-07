@@ -260,3 +260,283 @@ class Raffle(commands.Cog):
             return True
         raffles = await self.config.guild(ctx.guild).raffles()
         return not any(r["status"] == "active" for r in raffles.values())
+
+    # ── Launch & scheduling ───────────────────────────────────────────
+
+    async def _launch_raffle(
+        self,
+        ctx: commands.Context,
+        name: str,
+        emoji: str,
+        duration,
+        winner_count: int,
+        draw_type: str,
+    ):
+        tz_name = await self.config.guild(ctx.guild).timezone()
+        end_ts = time.time() + duration.total_seconds()
+        end_str = format_end_time(end_ts, tz_name)
+        method_str = "Auto-draw" if draw_type == "auto" else "Manual draw"
+
+        colour = await ctx.embed_colour()
+        embed = discord.Embed(
+            title=f"{emoji} {name}",
+            description=f"React with {emoji} to enter!",
+            colour=colour,
+        )
+        embed.add_field(name="Ends", value=end_str, inline=True)
+        embed.add_field(name="Winners", value=str(winner_count), inline=True)
+        embed.add_field(name="Method", value=method_str, inline=True)
+        embed.set_footer(text=f"Hosted by {ctx.author.display_name} · Participants: 0")
+
+        msg = await ctx.send(embed=embed)
+        try:
+            await msg.add_reaction(emoji)
+        except discord.HTTPException:
+            pass
+
+        entry = {
+            "name": name,
+            "emoji": emoji,
+            "channel_id": ctx.channel.id,
+            "creator_id": ctx.author.id,
+            "end_time": end_ts,
+            "winner_count": winner_count,
+            "draw_type": draw_type,
+            "status": "active",
+            "participants": [],
+            "winners": [],
+        }
+        async with self.config.guild(ctx.guild).raffles() as raffles:
+            raffles[str(msg.id)] = entry
+
+        delay = duration.total_seconds()
+        if draw_type == "auto":
+            self._schedule_auto_draw(ctx.guild, msg.id, delay)
+        else:
+            self._schedule_manual_notify(ctx.guild, msg.id, delay)
+
+    def _schedule_auto_draw(self, guild: discord.Guild, message_id: int, delay: float):
+        """Schedule auto winner draw. Stored in _draw_tasks (G2)."""
+        task_key = (guild.id, message_id)
+
+        async def _run():
+            await asyncio.sleep(max(0.0, delay))
+            await self._execute_draw(guild, message_id)
+
+        task = self.bot.loop.create_task(_run())
+        self._draw_tasks[task_key] = task
+
+    def _schedule_manual_notify(self, guild: discord.Guild, message_id: int, delay: float):
+        """Schedule DM notification when manual raffle duration ends. Stored in _draw_tasks (G2)."""
+        task_key = (guild.id, message_id)
+
+        async def _run():
+            await asyncio.sleep(max(0.0, delay))
+            await self._notify_manual_end(guild, message_id)
+
+        task = self.bot.loop.create_task(_run())
+        self._draw_tasks[task_key] = task
+
+    async def _reschedule_tasks(self):
+        """Restore both auto-draw and manual-notify tasks after bot restart (G3)."""
+        all_guilds = await self.config.all_guilds()
+        for guild_id, data in all_guilds.items():
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+            for msg_id_str, entry in data.get("raffles", {}).items():
+                if entry["status"] != "active":
+                    continue
+                delay = entry["end_time"] - time.time()
+                msg_id = int(msg_id_str)
+                if entry["draw_type"] == "auto":
+                    self._schedule_auto_draw(guild, msg_id, delay)
+                else:
+                    self._schedule_manual_notify(guild, msg_id, delay)
+
+    # ── Reaction tracking ─────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if payload.user_id == self.bot.user.id or not payload.guild_id:
+            return
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+        raffles = await self.config.guild(guild).raffles()
+        key = str(payload.message_id)
+        if key not in raffles:
+            return
+        entry = raffles[key]
+        if entry["status"] != "active":
+            return
+        if str(payload.emoji) != entry["emoji"]:
+            return
+        if payload.user_id in entry["participants"]:
+            return
+        entry["participants"].append(payload.user_id)
+        await self._update_participant_count(guild, payload.channel_id, payload.message_id, entry)
+        async with self.config.guild(guild).raffles() as r:
+            r[key] = entry
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
+        if payload.user_id == self.bot.user.id or not payload.guild_id:
+            return
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+        raffles = await self.config.guild(guild).raffles()
+        key = str(payload.message_id)
+        if key not in raffles:
+            return
+        entry = raffles[key]
+        if entry["status"] != "active":
+            return
+        if str(payload.emoji) != entry["emoji"]:
+            return
+        if payload.user_id not in entry["participants"]:
+            return
+        entry["participants"].remove(payload.user_id)
+        await self._update_participant_count(guild, payload.channel_id, payload.message_id, entry)
+        async with self.config.guild(guild).raffles() as r:
+            r[key] = entry
+
+    async def _update_participant_count(
+        self,
+        guild: discord.Guild,
+        channel_id: int,
+        message_id: int,
+        entry: dict,
+    ):
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+        try:
+            msg = await channel.fetch_message(message_id)
+        except discord.HTTPException:
+            return
+        if not msg.embeds:
+            return
+        embed = msg.embeds[0].copy()
+        creator = guild.get_member(entry["creator_id"])
+        host_name = creator.display_name if creator else "Unknown"
+        embed.set_footer(
+            text=f"Hosted by {host_name} · Participants: {len(entry['participants'])}"
+        )
+        try:
+            await msg.edit(embed=embed)
+        except discord.HTTPException:
+            pass
+
+    # ── Draw engine ───────────────────────────────────────────────────
+
+    async def _execute_draw(self, guild: discord.Guild, message_id: int):
+        """Run the winner draw animation and post the result."""
+        raffles = await self.config.guild(guild).raffles()
+        key = str(message_id)
+        if key not in raffles or raffles[key]["status"] != "active":
+            return
+        entry = raffles[key]
+        channel = guild.get_channel(entry["channel_id"])
+        if not channel:
+            return
+        try:
+            msg = await channel.fetch_message(message_id)
+        except discord.HTTPException:
+            return
+
+        participants = entry["participants"]
+        winner_ids = pick_winners(participants, entry["winner_count"])
+
+        # Rolling animation (4 frames, 0.8s apart)
+        if participants:
+            colour = discord.Colour.gold()
+            for _ in range(4):
+                candidate = guild.get_member(random.choice(participants))
+                roll_name = candidate.display_name if candidate else "???"
+                anim_embed = discord.Embed(
+                    title="🎰 Drawing winners...",
+                    description=f"Rolling... **{roll_name}**",
+                    colour=colour,
+                )
+                try:
+                    await msg.edit(embed=anim_embed)
+                except discord.HTTPException:
+                    pass
+                await asyncio.sleep(0.8)
+
+        # Final result embed
+        if not winner_ids:
+            description = "No one entered this raffle."
+        elif len(winner_ids) < entry["winner_count"]:
+            mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
+            description = f"All participants win!\n{mentions}"
+        else:
+            mentions = "\n".join(f"🥇 <@{uid}>" for uid in winner_ids)
+            description = f"Congratulations to:\n{mentions}"
+
+        creator = guild.get_member(entry["creator_id"])
+        host_name = creator.display_name if creator else "Unknown"
+        result_embed = discord.Embed(
+            title=f"🎉 {entry['name']} — Winners!",
+            description=description,
+            colour=discord.Colour.gold(),
+        )
+        result_embed.set_footer(
+            text=f"Hosted by {host_name} · {len(participants)} participants"
+        )
+        try:
+            await msg.edit(embed=result_embed)
+        except discord.HTTPException:
+            pass
+
+        # Archive and remove from active Config (G8)
+        entry["status"] = "ended"
+        entry["winners"] = winner_ids
+        self._archive_raffle(guild.id, key, entry)
+        async with self.config.guild(guild).raffles() as r:
+            r.pop(key, None)
+
+        self._draw_tasks.pop((guild.id, message_id), None)
+
+    async def _notify_manual_end(self, guild: discord.Guild, message_id: int):
+        """Edit announcement embed and DM creator when manual raffle duration ends."""
+        raffles = await self.config.guild(guild).raffles()
+        key = str(message_id)
+        if key not in raffles or raffles[key]["status"] != "active":
+            return
+        entry = raffles[key]
+        channel = guild.get_channel(entry["channel_id"])
+        creator = guild.get_member(entry["creator_id"])
+
+        # Edit announcement embed
+        if channel:
+            try:
+                ann_msg = await channel.fetch_message(message_id)
+                if ann_msg.embeds:
+                    embed = ann_msg.embeds[0].copy()
+                    mention = creator.mention if creator else f"<@{entry['creator_id']}>"
+                    embed.add_field(
+                        name="⏰ Status",
+                        value=f"Duration ended — awaiting draw by {mention}",
+                        inline=False,
+                    )
+                    await ann_msg.edit(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        # DM creator (G6: real prefix)
+        if creator:
+            prefix = await self._get_bot_prefix(guild)
+            ch_mention = channel.mention if channel else "#unknown"
+            try:
+                await creator.send(
+                    f'Your raffle **"{entry["name"]}"** in {ch_mention} '
+                    f"(**{guild.name}**) has ended.\n"
+                    f"Run `{prefix}raffle end` in that channel to draw winners."
+                )
+            except discord.HTTPException:
+                pass
+
+        self._draw_tasks.pop((guild.id, message_id), None)
