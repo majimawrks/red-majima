@@ -639,7 +639,8 @@ class Raffle(commands.Cog):
         task = self._draw_tasks.pop((guild.id, message_id), None)
         if task:
             task.cancel()
-        await ctx.maybe_send_embed("Drawing winners...")
+        # No extra "Drawing winners..." message — the animation on the raffle
+        # embed itself is the indicator; a separate message would be orphaned.
         await self._execute_draw(guild, message_id)
 
     async def _do_draw(
@@ -654,6 +655,11 @@ class Raffle(commands.Cog):
             task.cancel()
         await interaction.response.edit_message(content="Drawing winners...", view=None)
         await self._execute_draw(guild, message_id)
+        # Update the select-menu message so it doesn't stay as "Drawing winners..." forever
+        try:
+            await interaction.edit_original_response(content="✅ Winners drawn!")
+        except discord.HTTPException:
+            pass
 
     @raffle.command(name="end")
     async def raffle_end(self, ctx: commands.Context):
