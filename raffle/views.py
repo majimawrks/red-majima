@@ -58,10 +58,11 @@ class RaffleSetupModal(discord.ui.Modal, title="Start a Raffle"):
         max_length=3,
     )
 
-    def __init__(self, cog, ctx):
+    def __init__(self, cog, ctx, target_channel=None):
         super().__init__()
         self.cog = cog
         self.ctx = ctx
+        self.target_channel = target_channel
 
     async def on_submit(self, interaction: discord.Interaction):
         from .utils import parse_duration, validate_emoji
@@ -97,14 +98,14 @@ class RaffleSetupModal(discord.ui.Modal, title="Start a Raffle"):
             )
             return
 
-        view = RaffleTypeView(self.cog, self.ctx, name, emoji, duration, winner_count)
+        view = RaffleTypeView(self.cog, self.ctx, name, emoji, duration, winner_count, self.target_channel)
         await interaction.response.send_message(
             "**Step 2 — Pick winner method:**", view=view, ephemeral=True
         )
 
 
 class RaffleTypeView(discord.ui.View):
-    def __init__(self, cog, ctx, name: str, emoji: str, duration, winner_count: int):
+    def __init__(self, cog, ctx, name: str, emoji: str, duration, winner_count: int, target_channel=None):
         super().__init__(timeout=120)
         self.cog = cog
         self.ctx = ctx
@@ -112,6 +113,7 @@ class RaffleTypeView(discord.ui.View):
         self.emoji = emoji
         self.duration = duration
         self.winner_count = winner_count
+        self.target_channel = target_channel
 
     @discord.ui.select(
         placeholder="Pick winner method...",
@@ -132,7 +134,7 @@ class RaffleTypeView(discord.ui.View):
         draw_type = select.values[0]
         view = RaffleConfirmView(
             self.cog, self.ctx, self.name, self.emoji,
-            self.duration, self.winner_count, draw_type,
+            self.duration, self.winner_count, draw_type, self.target_channel,
         )
         embed = await view.build_embed()
         await interaction.response.edit_message(content=None, embed=embed, view=view)
@@ -140,7 +142,7 @@ class RaffleTypeView(discord.ui.View):
 
 
 class RaffleConfirmView(discord.ui.View):
-    def __init__(self, cog, ctx, name: str, emoji: str, duration, winner_count: int, draw_type: str):
+    def __init__(self, cog, ctx, name: str, emoji: str, duration, winner_count: int, draw_type: str, target_channel=None):
         super().__init__(timeout=120)
         self.cog = cog
         self.ctx = ctx
@@ -149,6 +151,7 @@ class RaffleConfirmView(discord.ui.View):
         self.duration = duration
         self.winner_count = winner_count
         self.draw_type = draw_type
+        self.target_channel = target_channel
 
     async def build_embed(self) -> discord.Embed:
         import time
@@ -164,6 +167,8 @@ class RaffleConfirmView(discord.ui.View):
         embed.add_field(name="Duration", value=f"Ends {end_str}", inline=False)
         embed.add_field(name="Winners", value=str(self.winner_count), inline=True)
         embed.add_field(name="Method", value=self.draw_type.capitalize(), inline=True)
+        if self.target_channel and self.target_channel.id != self.ctx.channel.id:
+            embed.add_field(name="Channel", value=self.target_channel.mention, inline=True)
         return embed
 
     @discord.ui.button(label="✅ Start", style=discord.ButtonStyle.success)
@@ -175,6 +180,7 @@ class RaffleConfirmView(discord.ui.View):
         await self.cog._launch_raffle(
             self.ctx, self.name, self.emoji,
             self.duration, self.winner_count, self.draw_type,
+            target_channel=self.target_channel,
         )
         self.stop()
 

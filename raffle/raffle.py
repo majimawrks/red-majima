@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,13 +13,11 @@ import discord
 from redbot.core import Config, commands, data_manager
 from redbot.core.bot import Red
 
-from .utils import format_end_time, parse_duration, pick_winners, validate_emoji, validate_timezone
+from .utils import format_end_time, pick_winners
 from .views import (
     RaffleCancelConfirmView,
-    RaffleConfirmView,
     RaffleSelectView,
     RaffleSetupModal,
-    RaffleTypeView,
     ResetConfirmView,
     TimezoneModal,
     _ModalTriggerView,
@@ -55,6 +54,7 @@ class Raffle(commands.Cog):
             task.cancel()
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
+        # Purge from active raffles in Config
         all_guilds = await self.config.all_guilds()
         for guild_id, guild_data in all_guilds.items():
             raffles = guild_data.get("raffles", {})
@@ -70,6 +70,31 @@ class Raffle(commands.Cog):
                 guild = self.bot.get_guild(guild_id)
                 if guild:
                     await self.config.guild(guild).raffles.set(raffles)
+
+        # Purge from on-disk history archives
+        history_base = self._history_base or data_manager.cog_data_path(self) / "history"
+        if not history_base.exists():
+            return
+        for guild_dir in history_base.iterdir():
+            if not guild_dir.is_dir():
+                continue
+            for archive_path in guild_dir.glob("*.json"):
+                try:
+                    history = json.loads(archive_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                changed = False
+                for entry in history:
+                    if user_id in entry.get("participants", []):
+                        entry["participants"].remove(user_id)
+                        changed = True
+                    if user_id in entry.get("winners", []):
+                        entry["winners"].remove(user_id)
+                        changed = True
+                if changed:
+                    archive_path.write_text(
+                        json.dumps(history, indent=2), encoding="utf-8"
+                    )
 
     # ── History archival (G8) ─────────────────────────────────────────
 
@@ -94,12 +119,6 @@ class Raffle(commands.Cog):
         entry_copy["archived_at"] = now.isoformat()
         history.append(entry_copy)
         path.write_text(json.dumps(history, indent=2), encoding="utf-8")
-
-    # ── Task scheduling (G2, G3) ──────────────────────────────────────
-
-    async def _reschedule_tasks(self):
-        """Restore auto-draw and manual-notify tasks after bot restart."""
-        pass  # Implemented in Task 8
 
     async def _get_bot_prefix(self, guild: discord.Guild) -> str:
         """Get the first valid prefix for DM messages (G6)."""
@@ -226,8 +245,12 @@ class Raffle(commands.Cog):
         """Raffle commands."""
 
     @raffle.command(name="start")
-    async def raffle_start(self, ctx: commands.Context):
-        """Open the raffle setup wizard."""
+    async def raffle_start(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Open the raffle setup wizard.
+
+        Optionally provide a target channel where the raffle will be posted.
+        Example: [p]raffle start #giveaways
+        """
         if not await self._can_start(ctx):
             await ctx.maybe_send_embed("You don't have permission to start a raffle.")
             return
@@ -237,8 +260,25 @@ class Raffle(commands.Cog):
                 "Enable multi-raffle (`setraffle multiconf`) or wait for it to end."
             )
             return
+        if channel is not None:
+            perms = channel.permissions_for(ctx.guild.me)
+            missing = []
+            if not perms.send_messages:
+                missing.append("Send Messages")
+            if not perms.embed_links:
+                missing.append("Embed Links")
+            if not perms.add_reactions:
+                missing.append("Add Reactions")
+            if not perms.read_message_history:
+                missing.append("Read Message History")
+            if missing:
+                await ctx.maybe_send_embed(
+                    f"❌ I'm missing permissions in {channel.mention}: "
+                    + ", ".join(f"**{p}**" for p in missing)
+                )
+                return
         view = _ModalTriggerView(
-            RaffleSetupModal(self, ctx),
+            RaffleSetupModal(self, ctx, target_channel=channel),
             label="Set Up Raffle",
             author_id=ctx.author.id,
         )
@@ -279,7 +319,9 @@ class Raffle(commands.Cog):
         duration,
         winner_count: int,
         draw_type: str,
+        target_channel: Optional[discord.TextChannel] = None,
     ):
+        post_channel = target_channel or ctx.channel
         tz_name = await self.config.guild(ctx.guild).timezone()
         end_ts = time.time() + duration.total_seconds()
         end_str = format_end_time(end_ts, tz_name)
@@ -296,7 +338,7 @@ class Raffle(commands.Cog):
         embed.add_field(name="Method", value=method_str, inline=True)
         embed.set_footer(text=f"Hosted by {ctx.author.display_name} · Participants: 0")
 
-        msg = await ctx.send(embed=embed)
+        msg = await post_channel.send(embed=embed)
         try:
             await msg.add_reaction(emoji)
         except discord.HTTPException:
@@ -305,7 +347,7 @@ class Raffle(commands.Cog):
         entry = {
             "name": name,
             "emoji": emoji,
-            "channel_id": ctx.channel.id,
+            "channel_id": post_channel.id,
             "creator_id": ctx.author.id,
             "end_time": end_ts,
             "winner_count": winner_count,
@@ -322,6 +364,8 @@ class Raffle(commands.Cog):
             self._schedule_auto_draw(ctx.guild, msg.id, delay)
         else:
             self._schedule_manual_notify(ctx.guild, msg.id, delay)
+
+    # ── Task scheduling (G2, G3) ──────────────────────────────────────
 
     def _schedule_auto_draw(self, guild: discord.Guild, message_id: int, delay: float):
         """Schedule auto winner draw. Stored in _draw_tasks (G2)."""
@@ -653,6 +697,9 @@ class Raffle(commands.Cog):
         entry = raffles[key]
         entry["status"] = "cancelled"
 
+        # Respond immediately to avoid Discord's 3-second interaction timeout
+        await interaction.response.edit_message(content="✅ Raffle cancelled.", view=None)
+
         # Cancel any pending scheduled task (G2)
         task = self._draw_tasks.pop((guild.id, message_id), None)
         if task:
@@ -676,8 +723,6 @@ class Raffle(commands.Cog):
         async with self.config.guild(guild).raffles() as r:
             r.pop(key, None)
 
-        await interaction.response.edit_message(content="✅ Raffle cancelled.", view=None)
-
     # ── raffle history ────────────────────────────────────────────────
 
     @raffle.command(name="history")
@@ -689,6 +734,11 @@ class Raffle(commands.Cog):
         """
         if month is None:
             month = datetime.now(timezone.utc).strftime("%Y-%m")
+        elif not re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", month):
+            await ctx.maybe_send_embed(
+                "❌ Invalid month format. Use `YYYY-MM` (e.g. `2026-05`)."
+            )
+            return
         path = self._history_dir(ctx.guild.id) / f"{month}.json"
         if not path.exists():
             await ctx.maybe_send_embed(f"No raffle history for **{month}**.")

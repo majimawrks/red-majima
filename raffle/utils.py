@@ -90,4 +90,4 @@ def pick_winners(participants: list[int], count: int) -> list[int]:
 def format_end_time(end_ts: float, tz_name: str) -> str:
     tz = _get_tz(tz_name)
     dt = datetime.fromtimestamp(end_ts, tz=tz)
-    return dt.strftime("%H:%M %Z · %d %b %Y")
+    return dt.strftime("%H:%M %Z · %d %B %Y")
