@@ -496,25 +496,36 @@ class Raffle(commands.Cog):
 
     # ── Draw engine ───────────────────────────────────────────────────
 
-    async def _execute_draw(self, guild: discord.Guild, message_id: int):
-        """Run the winner draw animation and post the result."""
+    async def _execute_draw(
+        self,
+        guild: discord.Guild,
+        message_id: int,
+        result_channel: Optional[discord.TextChannel] = None,
+    ):
+        """Run the winner draw, collapse the raffle embed, post result separately.
+
+        result_channel: where to post the winner embed. Defaults to the
+        raffle's own channel (used for auto-draw).
+        """
         raffles = await self.config.guild(guild).raffles()
         key = str(message_id)
         if key not in raffles or raffles[key]["status"] != "active":
             return
         entry = raffles[key]
-        channel = guild.get_channel(entry["channel_id"])
-        if not channel:
+        raffle_channel = guild.get_channel(entry["channel_id"])
+        if not raffle_channel:
             return
         try:
-            msg = await channel.fetch_message(message_id)
+            msg = await raffle_channel.fetch_message(message_id)
         except discord.HTTPException:
             return
 
         participants = entry["participants"]
         winner_ids = pick_winners(participants, entry["winner_count"])
+        creator = guild.get_member(entry["creator_id"])
+        host_name = creator.display_name if creator else "Unknown"
 
-        # Rolling animation (4 frames, 0.8s apart)
+        # Rolling animation (4 frames, 0.8s apart) on the original embed
         if participants:
             colour = discord.Colour.gold()
             for _ in range(4):
@@ -531,7 +542,20 @@ class Raffle(commands.Cog):
                     pass
                 await asyncio.sleep(0.8)
 
-        # Final result embed
+        # Collapse original embed to a minimal tombstone
+        ended_embed = discord.Embed(
+            title=f"{entry['emoji']} {entry['name']}",
+            colour=discord.Colour.greyple(),
+        )
+        ended_embed.set_footer(
+            text=f"Raffle ended · Hosted by {host_name} · {len(participants)} participants"
+        )
+        try:
+            await msg.edit(embed=ended_embed)
+        except discord.HTTPException:
+            pass
+
+        # Build and post winner result as a new message
         if not winner_ids:
             description = "No one entered this raffle."
         elif len(winner_ids) < entry["winner_count"]:
@@ -541,8 +565,6 @@ class Raffle(commands.Cog):
             mentions = "\n".join(f"🥇 <@{uid}>" for uid in winner_ids)
             description = f"Congratulations to:\n{mentions}"
 
-        creator = guild.get_member(entry["creator_id"])
-        host_name = creator.display_name if creator else "Unknown"
         result_embed = discord.Embed(
             title=f"🎉 {entry['name']} — Winners!",
             description=description,
@@ -551,8 +573,9 @@ class Raffle(commands.Cog):
         result_embed.set_footer(
             text=f"Hosted by {host_name} · {len(participants)} participants"
         )
+        post_to = result_channel or raffle_channel
         try:
-            await msg.edit(embed=result_embed)
+            await post_to.send(embed=result_embed)
         except discord.HTTPException:
             pass
 
@@ -635,13 +658,11 @@ class Raffle(commands.Cog):
         self, ctx: commands.Context, guild: discord.Guild, message_id: int
     ):
         """Trigger draw from a prefix command context."""
-        # Cancel any pending scheduled task first
         task = self._draw_tasks.pop((guild.id, message_id), None)
         if task:
             task.cancel()
-        # No extra "Drawing winners..." message — the animation on the raffle
-        # embed itself is the indicator; a separate message would be orphaned.
-        await self._execute_draw(guild, message_id)
+        # Pass the command channel so the winner embed appears here
+        await self._execute_draw(guild, message_id, result_channel=ctx.channel)
 
     async def _do_draw(
         self,
@@ -653,11 +674,12 @@ class Raffle(commands.Cog):
         task = self._draw_tasks.pop((guild.id, message_id), None)
         if task:
             task.cancel()
-        await interaction.response.edit_message(content="Drawing winners...", view=None)
-        await self._execute_draw(guild, message_id)
-        # Update the select-menu message so it doesn't stay as "Drawing winners..." forever
+        # Acknowledge the interaction immediately to remove the select menu
+        await interaction.response.edit_message(content="Drawing...", view=None)
+        # Pass the interaction channel so the winner embed appears here
+        await self._execute_draw(guild, message_id, result_channel=interaction.channel)
         try:
-            await interaction.edit_original_response(content="✅ Winners drawn!")
+            await interaction.delete_original_response()
         except discord.HTTPException:
             pass
 
