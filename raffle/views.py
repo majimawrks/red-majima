@@ -40,10 +40,11 @@ class RaffleSetupModal(discord.ui.Modal, title="Start a Raffle"):
         max_length=80,
     )
     emoji_input = discord.ui.TextInput(
-        label="Entry Emoji",
-        placeholder="e.g. 🎉 or <:custom:123456>",
-        min_length=1,
+        label="Entry Emoji (optional, default 🎉)",
+        placeholder="Leave blank for 🎉, or enter <:custom:123456>",
+        min_length=0,
         max_length=30,
+        required=False,
     )
     duration_input = discord.ui.TextInput(
         label="Duration",
@@ -68,12 +69,12 @@ class RaffleSetupModal(discord.ui.Modal, title="Start a Raffle"):
         from .utils import parse_duration, validate_emoji
 
         name = self.name_input.value.strip()
-        emoji = self.emoji_input.value.strip()
+        emoji = self.emoji_input.value.strip() or "🎉"
         raw_duration = self.duration_input.value.strip()
         raw_winners = self.winners_input.value.strip()
 
-        # G4: validate emoji
-        if not validate_emoji(emoji):
+        # G4: validate emoji only when user supplied one (blank → default 🎉 already set)
+        if emoji != "🎉" and not validate_emoji(emoji):
             await interaction.response.send_message(
                 "❌ Invalid emoji. Use a Unicode emoji (🎉) or custom emoji (<:name:id>).",
                 ephemeral=True,
