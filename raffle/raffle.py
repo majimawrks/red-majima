@@ -173,18 +173,24 @@ class Raffle(commands.Cog):
         """Append one or more roles to the allowed-starters list.
 
         Accepts role mentions, role names, or role IDs.
+        Automatically switches to closed mode if the guild is currently open.
         Example: [p]setraffle roleconf @Mods 123456789 VIPs
         """
         if not roles:
             await ctx.maybe_send_embed("Provide at least one role (mention, name, or ID).")
             return
-        async with self.config.guild(ctx.guild).allowed_roles() as lst:
+        cfg = self.config.guild(ctx.guild)
+        was_open = await cfg.open()
+        async with cfg.allowed_roles() as lst:
             for role in roles:
                 if role.id not in lst:
                     lst.append(role.id)
+        if was_open:
+            await cfg.open.set(False)
         names = ", ".join(r.mention for r in roles)
+        suffix = " Raffle mode switched to **Closed**." if was_open else ""
         await ctx.send(
-            f"Added to allowed roles: {names}",
+            f"Added to allowed roles: {names}.{suffix}",
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -193,18 +199,24 @@ class Raffle(commands.Cog):
         """Append one or more members to the allowed-starters list.
 
         Accepts member mentions, usernames, or user IDs.
+        Automatically switches to closed mode if the guild is currently open.
         Example: [p]setraffle memberconf @alice 123456789
         """
         if not members:
             await ctx.maybe_send_embed("Provide at least one member (mention, username, or ID).")
             return
-        async with self.config.guild(ctx.guild).allowed_members() as lst:
+        cfg = self.config.guild(ctx.guild)
+        was_open = await cfg.open()
+        async with cfg.allowed_members() as lst:
             for member in members:
                 if member.id not in lst:
                     lst.append(member.id)
+        if was_open:
+            await cfg.open.set(False)
         names = ", ".join(m.mention for m in members)
+        suffix = " Raffle mode switched to **Closed**." if was_open else ""
         await ctx.send(
-            f"Added to allowed members: {names}",
+            f"Added to allowed members: {names}.{suffix}",
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
