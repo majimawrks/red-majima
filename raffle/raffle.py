@@ -540,3 +540,71 @@ class Raffle(commands.Cog):
                 pass
 
         self._draw_tasks.pop((guild.id, message_id), None)
+
+    # ── raffle end / cancel helpers ───────────────────────────────────
+
+    async def _get_visible_raffles(
+        self,
+        ctx: commands.Context,
+        *,
+        draw_type: Optional[str] = None,
+    ) -> dict:
+        """Return active raffles the invoker can act on."""
+        raffles = await self.config.guild(ctx.guild).raffles()
+        is_privileged = (
+            ctx.author.guild_permissions.administrator
+            or ctx.author.guild_permissions.manage_channels
+            or ctx.author.guild_permissions.moderate_members
+        )
+        result = {}
+        for key, entry in raffles.items():
+            if entry["status"] != "active":
+                continue
+            if draw_type and entry["draw_type"] != draw_type:
+                continue
+            if is_privileged or entry["creator_id"] == ctx.author.id:
+                result[key] = entry
+        return result
+
+    async def _do_draw_ctx(
+        self, ctx: commands.Context, guild: discord.Guild, message_id: int
+    ):
+        """Trigger draw from a prefix command context."""
+        # Cancel any pending scheduled task first
+        task = self._draw_tasks.pop((guild.id, message_id), None)
+        if task:
+            task.cancel()
+        await ctx.maybe_send_embed("Drawing winners...")
+        await self._execute_draw(guild, message_id)
+
+    async def _do_draw(
+        self,
+        interaction: discord.Interaction,
+        guild: discord.Guild,
+        message_id: int,
+    ):
+        """Trigger draw from a select-menu interaction."""
+        task = self._draw_tasks.pop((guild.id, message_id), None)
+        if task:
+            task.cancel()
+        await interaction.response.edit_message(content="Drawing winners...", view=None)
+        await self._execute_draw(guild, message_id)
+
+    @raffle.command(name="end")
+    async def raffle_end(self, ctx: commands.Context):
+        """Trigger the winner draw for a raffle.
+
+        Works on manual raffles waiting to be drawn, and can also
+        force-end an auto raffle early.
+        """
+        visible = await self._get_visible_raffles(ctx)
+        if not visible:
+            await ctx.maybe_send_embed("No active raffles you can draw.")
+            return
+        if len(visible) == 1:
+            msg_id = int(next(iter(visible)))
+            await self._do_draw_ctx(ctx, ctx.guild, msg_id)
+        else:
+            view = RaffleSelectView(self, ctx, visible, action="end")
+            msg = await ctx.send("Which raffle do you want to draw?", view=view)
+            view.message = msg

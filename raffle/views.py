@@ -187,7 +187,66 @@ class RaffleConfirmView(discord.ui.View):
 
 
 class RaffleSelectView(discord.ui.View):
-    pass
+    """Select which raffle to act on when multiple are active."""
+
+    def __init__(self, cog, ctx, raffles: dict, action: str):
+        """
+        raffles : {message_id_str: entry} — filtered to invoker's visible raffles.
+        action  : "end" | "cancel"
+        """
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.ctx = ctx
+        self.action = action
+        self.message: Optional[discord.Message] = None
+
+        options = []
+        for msg_id, entry in raffles.items():
+            ch = ctx.guild.get_channel(entry["channel_id"])
+            ch_name = f"#{ch.name}" if ch else "#?"
+            options.append(
+                discord.SelectOption(
+                    label=entry["name"][:100],
+                    value=msg_id,
+                    description=ch_name,
+                )
+            )
+        self.add_item(_RaffleSelectMenu(options, cog, ctx, action))
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+
+class _RaffleSelectMenu(discord.ui.Select):
+    def __init__(self, options, cog, ctx, action):
+        super().__init__(placeholder="Select a raffle...", options=options)
+        self.cog = cog
+        self.ctx = ctx
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        msg_id = int(self.values[0])
+        if self.action == "end":
+            await self.cog._do_draw(interaction, self.ctx.guild, msg_id)
+        else:
+            # G7: always show confirmation for cancel, even from multi-select
+            raffles = await self.cog.config.guild(self.ctx.guild).raffles()
+            entry = raffles.get(str(msg_id))
+            if not entry:
+                await interaction.response.edit_message(
+                    content="Raffle not found.", view=None
+                )
+                return
+            view = RaffleCancelConfirmView(self.cog, self.ctx, self.ctx.guild, msg_id)
+            await interaction.response.edit_message(
+                content=f"Cancel raffle **{entry['name']}**? This cannot be undone.",
+                view=view,
+            )
+        self.view.stop()
 
 
 class RaffleCancelConfirmView(discord.ui.View):
