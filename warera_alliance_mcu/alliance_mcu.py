@@ -37,11 +37,13 @@ class ReportPaginatorView(discord.ui.View):
         self,
         pages: list[discord.Embed],
         author_id: int,
+        message: discord.Message | None = None,
         timeout: float = 300,
     ):
         super().__init__(timeout=timeout)
         self.pages = pages
         self.author_id = author_id
+        self.message = message
         self.index = 0
         self._update_buttons()
 
@@ -76,6 +78,11 @@ class ReportPaginatorView(discord.ui.View):
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -99,9 +106,19 @@ class AllianceMCU(commands.Cog):
         self._regions_cache: Optional[dict] = None
         self._regions_cache_time: float = 0.0
         self._cooldowns: dict[tuple[int, str], float] = {}
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._api_sem = asyncio.Semaphore(8)
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
+        return self._session
 
     async def cog_unload(self):
-        pass
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     async def red_delete_data_for_user(self, *, requester, user_id):
         pass
@@ -118,10 +135,9 @@ class AllianceMCU(commands.Cog):
         api_key = await self.config.api_key()
         if api_key:
             headers["X-API-Key"] = api_key
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(
-                url, timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
+        session = await self._get_session()
+        async with self._api_sem:
+            async with session.get(url, headers=headers) as resp:
                 resp.raise_for_status()
                 data = (await resp.json())["result"]["data"]
         return data
@@ -227,6 +243,9 @@ class AllianceMCU(commands.Cog):
                 return c["_id"], c["name"]
         for c in countries:
             if c.get("code", "").lower() == text_lower:
+                return c["_id"], c["name"]
+        for c in countries:
+            if c["name"].lower() == text_lower:
                 return c["_id"], c["name"]
         for c in countries:
             if text_lower in c["name"].lower():
@@ -541,7 +560,7 @@ class AllianceMCU(commands.Cog):
                 for (aid, _), result in zip(party_ids, results):
                     parties[aid] = result if not isinstance(result, Exception) else None
 
-            # Fetch per-ally damage from battles for our country (last 7 days)
+            # Fetch per-ally damage from battles for our country (last 2 days)
             try:
                 ally_battle_damage = await self._compute_ally_battle_damage(
                     country_id, set(allies_ids),
@@ -557,43 +576,48 @@ class AllianceMCU(commands.Cog):
         colour = await ctx.embed_colour()
         cache_age = int(time.monotonic() - self._countries_cache_time)
 
-        pages = []
-        for i, aid in enumerate(allies_ids):
+        # Build page data (without page total yet)
+        page_data = []
+        for aid in allies_ids:
             ally = countries_lookup.get(aid)
             if not ally:
                 continue
-            party = parties.get(aid)
-            c_regions = self._get_country_regions(all_regions, aid)
+            page_data.append({
+                "ally": ally,
+                "party": parties.get(aid),
+                "regions": self._get_country_regions(all_regions, aid),
+                "dmg_for_us": ally_battle_damage.get(aid, 0),
+            })
+
+        if not page_data:
+            await ctx.send("Tidak ada data aliansi yang bisa ditampilkan.")
+            return
+
+        total_pages = len(page_data)
+        pages = []
+        for i, pd in enumerate(page_data):
             embed = self._build_ally_embed(
-                ally=ally,
-                party=party,
-                country_regions=c_regions,
+                ally=pd["ally"],
+                party=pd["party"],
+                country_regions=pd["regions"],
                 tags=tags,
                 bonus_config=bonus_config,
                 countries_lookup=countries_lookup,
                 colour=colour,
-                page=len(pages) + 1,
-                total=0,
+                page=i + 1,
+                total=total_pages,
                 cache_age=cache_age,
-                ally_dmg_for_us=ally_battle_damage.get(aid, 0),
+                ally_dmg_for_us=pd["dmg_for_us"],
                 our_country_name=country_name,
             )
             pages.append(embed)
-
-        if not pages:
-            await ctx.send("Tidak ada data aliansi yang bisa ditampilkan.")
-            return
-
-        # Fix page totals
-        for i, embed in enumerate(pages):
-            footer_text = embed.footer.text or ""
-            embed.set_footer(text=footer_text.replace("/0", f"/{len(pages)}"))
 
         if len(pages) == 1:
             await ctx.send(embed=pages[0])
         else:
             view = ReportPaginatorView(pages, author_id=ctx.author.id)
-            await ctx.send(embed=pages[0], view=view)
+            msg = await ctx.send(embed=pages[0], view=view)
+            view.message = msg
 
     @amcu.command(name="setcountry")
     @commands.guild_only()
@@ -638,6 +662,9 @@ class AllianceMCU(commands.Cog):
         self, ctx: commands.Context, country: str, *, group_name: str,
     ):
         """Set a country's group/faction."""
+        if len(group_name) > 100:
+            await ctx.send("Group name terlalu panjang (maks 100 karakter).")
+            return
         result = await self._resolve_country(country)
         if not result:
             await ctx.send(f"Negara `{country}` tidak ditemukan.")
@@ -653,6 +680,9 @@ class AllianceMCU(commands.Cog):
         self, ctx: commands.Context, country: str, *, text: str,
     ):
         """Add notes to a country."""
+        if len(text) > 500:
+            await ctx.send("Notes terlalu panjang (maks 500 karakter).")
+            return
         result = await self._resolve_country(country)
         if not result:
             await ctx.send(f"Negara `{country}` tidak ditemukan.")
@@ -730,6 +760,13 @@ class AllianceMCU(commands.Cog):
             )
             return
 
+        if alliance_pct is not None and not (0 <= alliance_pct <= 100):
+            await ctx.send("Alliance bonus harus antara 0–100%.")
+            return
+        if extra_pct is not None and not (0 <= extra_pct <= 100):
+            await ctx.send("Extra bonus harus antara 0–100%.")
+            return
+
         async with self.config.guild(ctx.guild).bonus_config() as cfg:
             if alliance_pct is not None:
                 cfg["alliance_bonus_pct"] = alliance_pct
@@ -774,6 +811,10 @@ class AllianceMCU(commands.Cog):
             await self.config.api_key.set(eqcalc_key)
             self._countries_cache = None
             self._regions_cache = None
+            try:
+                await ctx.message.delete()
+            except (discord.Forbidden, discord.HTTPException):
+                pass
             await ctx.send("✅ API key disalin dari **warera_eqcalc**.", delete_after=5)
             return
 
