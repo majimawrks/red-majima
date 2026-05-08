@@ -192,6 +192,28 @@ class WareraAsk(commands.Cog):
         mentions = [f"<@{uid}>" for uid in allowed]
         await ctx.send(f"Allowed members: {', '.join(mentions)}")
 
+    @wask.command(name="info")
+    async def wask_info(self, ctx: commands.Context):
+        """Show warera_ask status and configuration."""
+        gemini_key = await self.config.gemini_api_key()
+        warera_key = await self.config.warera_api_key()
+
+        lines = [
+            f"**Gemini API key:** {'✅ set' if gemini_key else '❌ not set'}",
+            f"**Warera API key:** {'✅ set' if warera_key else '⚠️ not set (optional)'}",
+            f"**Endpoints loaded:** {len(self._schema)}",
+        ]
+        if ctx.guild:
+            allowed = await self.config.guild(ctx.guild).allowed_users()
+            lines.append(f"**Allowed members (this server):** {len(allowed)}")
+
+        embed = discord.Embed(
+            title="WareraAsk",
+            description="\n".join(lines),
+            colour=await ctx.embed_colour(),
+        )
+        await ctx.send(embed=embed)
+
     # ------------------------------------------------------------------
     # Gemini agent engine
     # ------------------------------------------------------------------
@@ -369,6 +391,7 @@ class WareraAsk(commands.Cog):
     # Main query command
     # ------------------------------------------------------------------
 
+    @commands.cooldown(1, 10, commands.BucketType.user)
     @wask.command(name="ask")
     async def wask_ask(self, ctx: commands.Context, *, question: str):
         """Ask a question about Warera in natural language.
@@ -394,6 +417,8 @@ class WareraAsk(commands.Cog):
         async with ctx.typing():
             try:
                 answer, tool_calls = await self._ask_gemini(question)
+                if len(answer) > 4000:
+                    answer = answer[:4000] + "… (truncated)"
             except Exception as e:
                 embed = discord.Embed(
                     description=f"Error: {e}",
