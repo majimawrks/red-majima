@@ -364,3 +364,51 @@ class WareraAsk(commands.Cog):
             contents.append(types.Content(role="tool", parts=fn_responses))
 
         return ("Maaf, tidak dapat menjawab pertanyaan dalam batas iterasi.", tool_calls_log)
+
+    # ------------------------------------------------------------------
+    # Main query command
+    # ------------------------------------------------------------------
+
+    @wask.command(name="ask")
+    async def wask_ask(self, ctx: commands.Context, *, question: str):
+        """Ask a question about Warera in natural language.
+
+        Add --debug anywhere in your question to see which API calls were made.
+        Example: [p]wask ask How many countries? --debug
+        """
+        debug = "--debug" in question
+        question = question.replace("--debug", "").strip()
+
+        if not question:
+            await ctx.send_help(ctx.command)
+            return
+
+        gemini_key = await self.config.gemini_api_key()
+        if not gemini_key:
+            embed = discord.Embed(
+                description="Gemini API key belum di-set. Gunakan `[p]wask setgemini <key>`.",
+                colour=discord.Colour.red(),
+            )
+            return await ctx.send(embed=embed)
+
+        async with ctx.typing():
+            try:
+                answer, tool_calls = await self._ask_gemini(question)
+            except Exception as e:
+                embed = discord.Embed(
+                    description=f"Error: {e}",
+                    colour=discord.Colour.red(),
+                )
+                return await ctx.send(embed=embed)
+
+        embed = discord.Embed(
+            description=answer,
+            colour=await ctx.embed_colour(),
+        )
+        embed.set_footer(text=f"Q: {question[:100]}")
+
+        if debug and tool_calls:
+            debug_lines = "\n".join(f"`{tc}`" for tc in tool_calls)
+            embed.add_field(name="🔧 API calls made", value=debug_lines[:1024], inline=False)
+
+        await ctx.send(embed=embed)
