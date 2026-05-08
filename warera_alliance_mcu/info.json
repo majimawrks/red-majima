@@ -1,0 +1,13 @@
+{
+    "author": ["skeith"],
+    "install_msg": "AllianceMCU loaded. Use `[p]amcu setcountry` to configure.",
+    "name": "AllianceMCU",
+    "disabled": false,
+    "short": "Warera alliance cost/benefit analysis report",
+    "description": "Fetches alliance data from the Warera API and generates per-ally reports with damage stats, estimated alliance cost, party ethics bonuses, and manual tags.",
+    "tags": ["warera", "game", "alliance", "report"],
+    "requirements": [],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "type": "COG"
+}
