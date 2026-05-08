@@ -88,7 +88,7 @@ class WareraAsk(commands.Cog):
         await self.config.gemini_api_key.set(api_key)
         try:
             await ctx.message.delete()
-        except discord.HTTPException:
+        except (discord.Forbidden, discord.HTTPException):
             pass
         await ctx.send("✅ Gemini API key tersimpan.", delete_after=5)
 
@@ -142,7 +142,7 @@ class WareraAsk(commands.Cog):
             return None
         try:
             return await eqcalc.config.api_key()
-        except Exception:
+        except AttributeError:
             return None
 
     # ------------------------------------------------------------------
