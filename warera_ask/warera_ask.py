@@ -1,6 +1,5 @@
 import asyncio
 import json
-import time
 import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
