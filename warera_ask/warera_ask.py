@@ -117,35 +117,37 @@ class WareraAsk(commands.Cog):
         """Set or clear the Warera API key (bot owner only).
 
         Run without arguments to check status.
-        Use `[p]wask setapi copy` to copy the key from warera_eqcalc if loaded.
+        Use `[p]wask setapi copy` to copy the key from warera_eqcalc or
+        warera_alliance_mcu if loaded.
         """
         if api_key is None:
             current = await self.config.warera_api_key()
             status = "sudah di-set" if current else "belum di-set"
-            eqcalc_hint = ""
+            sibling_hint = ""
             if not current:
-                eqcalc_key = await self._get_eqcalc_api_key()
-                if eqcalc_key:
-                    eqcalc_hint = (
-                        f"\n💡 API key ditemukan di **warera_eqcalc**. "
+                sibling_key, sibling_name = await self._get_sibling_api_key()
+                if sibling_key:
+                    sibling_hint = (
+                        f"\n💡 API key ditemukan di **{sibling_name}**. "
                         f"Gunakan `{ctx.clean_prefix}wask setapi copy` untuk menyalin."
                     )
-            await ctx.send(f"API key {status}.{eqcalc_hint}")
+            await ctx.send(f"API key {status}.{sibling_hint}")
             return
 
         if api_key.lower() == "copy":
-            eqcalc_key = await self._get_eqcalc_api_key()
-            if not eqcalc_key:
+            sibling_key, sibling_name = await self._get_sibling_api_key()
+            if not sibling_key:
                 await ctx.send(
-                    "❌ Tidak bisa menyalin: **warera_eqcalc** tidak loaded atau API key-nya belum di-set."
+                    "❌ Tidak bisa menyalin: **warera_eqcalc** atau **warera_alliance_mcu** "
+                    "tidak loaded, atau API key-nya belum di-set."
                 )
                 return
-            await self.config.warera_api_key.set(eqcalc_key)
+            await self.config.warera_api_key.set(sibling_key)
             try:
                 await ctx.message.delete()
             except (discord.Forbidden, discord.HTTPException):
                 pass
-            await ctx.send("✅ API key disalin dari **warera_eqcalc**.", delete_after=5)
+            await ctx.send(f"✅ API key disalin dari **{sibling_name}**.", delete_after=5)
             return
 
         await self.config.warera_api_key.set(api_key)
@@ -155,14 +157,26 @@ class WareraAsk(commands.Cog):
             pass
         await ctx.send("✅ API key tersimpan.", delete_after=5)
 
-    async def _get_eqcalc_api_key(self) -> Optional[str]:
-        eqcalc = self.bot.get_cog("EqCalc")
-        if eqcalc is None:
-            return None
-        try:
-            return await eqcalc.config.api_key()
-        except AttributeError:
-            return None
+    # Cogs to probe for an existing Warera API key (in priority order).
+    # First match wins. Each entry is (cog_name, display_name).
+    _SIBLING_KEY_SOURCES = (
+        ("EqCalc", "warera_eqcalc"),
+        ("AllianceMCU", "warera_alliance_mcu"),
+    )
+
+    async def _get_sibling_api_key(self) -> tuple[Optional[str], Optional[str]]:
+        """Return (api_key, source_display_name) from a sibling cog, or (None, None)."""
+        for cog_name, display_name in self._SIBLING_KEY_SOURCES:
+            cog = self.bot.get_cog(cog_name)
+            if cog is None:
+                continue
+            try:
+                key = await cog.config.api_key()
+            except AttributeError:
+                continue
+            if key:
+                return key, display_name
+        return None, None
 
     # ------------------------------------------------------------------
     # Allowlist management (owner only, guild only)
