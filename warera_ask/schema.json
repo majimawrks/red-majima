@@ -68,7 +68,7 @@
       "type": {
         "type": "string",
         "required": true,
-        "description": "Feed type. REQUIRED — omitting causes 400. Enum: `daily` \\"
+        "description": "Feed type. REQUIRED — omitting causes 400. Enum: `daily` | `weekly` | `top` | `my` | `subscriptions` | `last`."
       },
       "limit": {
         "type": "number",
@@ -263,17 +263,17 @@
       "type": {
         "type": "string",
         "required": true,
-        "description": "Entity type to rank within the battle. Enum: `user` \\"
+        "description": "Entity type to rank within the battle. Enum: `user` | `country` | `mu`."
       },
       "side": {
         "type": "string",
         "required": true,
-        "description": "Which side to return. Use 'merged' for combined rankings. Enum: `attacker` \\"
+        "description": "Which side to return. Use 'merged' for combined rankings. Enum: `attacker` | `defender` | `merged`."
       },
       "dataType": {
         "type": "string",
         "required": false,
-        "description": "Metric to rank by. Default: damage. Enum: `damage` \\"
+        "description": "Metric to rank by. Default: damage. Enum: `damage` | `points`."
       }
     },
     "returns": [

@@ -36,7 +36,8 @@ def parse_spec(spec_path: Path) -> dict | None:
         if in_input and line.strip().startswith("## "):
             break
         if in_input and "|" in line and "---" not in line and "Parameter" not in line:
-            cols = [c.strip().strip("`") for c in line.split("|")[1:-1]]
+            normalized = line.replace(r"\|", "\x00")
+            cols = [c.replace("\x00", "|").strip().strip("`") for c in normalized.split("|")[1:-1]]
             if len(cols) >= 4:
                 params[cols[0]] = {
                     "type": cols[1],
@@ -59,10 +60,10 @@ def parse_spec(spec_path: Path) -> dict | None:
 
     # Extract auth requirement
     auth = "none"
-    for i, line in enumerate(lines):
+    for idx, line in enumerate(lines):
         if line.strip().lower().startswith("## auth"):
-            if i + 1 < len(lines):
-                auth = lines[i + 1].strip().lower()
+            if idx + 1 < len(lines):
+                auth = lines[idx + 1].strip().lower()
             break
 
     return {
@@ -77,6 +78,8 @@ def parse_spec(spec_path: Path) -> dict | None:
 def main():
     specs = []
     for spec_dir in sorted(SPECS_DIR.iterdir()):
+        if not spec_dir.is_dir():
+            continue
         spec_md = spec_dir / "spec.md"
         if spec_md.exists():
             parsed = parse_spec(spec_md)
