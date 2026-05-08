@@ -28,49 +28,22 @@ def test_endpoint_name_roundtrip():
         assert restored == original, f"Round-trip failed for {original!r}"
 
 
-def test_safe_builtins_blocks_dangerous_calls():
-    """_SAFE_BUILTINS does not expose __import__ or open."""
+def test_no_eval_in_module():
+    """The cog must not contain eval() or exec() — they were removed for security.
+
+    Restricted-builtins eval is escapable via object hierarchy traversal
+    (e.g. (1).__class__.__bases__[0].__subclasses__()), so the calculate
+    tool was dropped entirely. This test prevents a regression that
+    re-introduces a sandbox.
+    """
     import ast
 
     src = Path(__file__).resolve().parent.parent / "warera_ask" / "warera_ask.py"
     tree = ast.parse(src.read_text(encoding="utf-8"))
 
-    safe_names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "_SAFE_BUILTINS":
-                    if isinstance(node.value, ast.Dict):
-                        for key in node.value.keys:
-                            if isinstance(key, ast.Constant):
-                                safe_names.add(key.value)
-
-    assert safe_names, "_SAFE_BUILTINS not found or empty in warera_ask.py"
-
-    # Dangerous builtins must not be present
-    assert "__import__" not in safe_names
-    assert "open" not in safe_names
-    assert "exec" not in safe_names
-    assert "eval" not in safe_names
-
-    # Safe builtins must be present
-    assert "len" in safe_names
-    assert "sum" in safe_names
-    assert "sorted" in safe_names
-
-    # Verify that eval with these extracted names cannot call __import__
-    # Build a minimal builtins dict from the actual module-level values
-    safe_builtins_live = {
-        name: __builtins__[name] if isinstance(__builtins__, dict) else getattr(__builtins__, name)
-        for name in safe_names
-        if (
-            isinstance(__builtins__, dict) and name in __builtins__
-        ) or (
-            not isinstance(__builtins__, dict) and hasattr(__builtins__, name)
-        )
-    }
-    try:
-        eval("__import__('os')", {"__builtins__": safe_builtins_live}, {})
-        assert False, "Should have raised NameError"
-    except NameError:
-        pass  # Expected
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id not in ("eval", "exec"), (
+                f"{node.func.id}() call found at line {node.lineno} — this is "
+                "a sandbox-escape risk. Use AST-based evaluation or remove."
+            )

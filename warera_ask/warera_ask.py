@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
@@ -14,13 +16,14 @@ from redbot.core.bot import Red
 BASE_URL = "https://api2.warera.io/trpc"
 _SCHEMA_PATH = Path(__file__).parent / "schema.json"
 
-_SAFE_BUILTINS = {
-    "len": len, "sum": sum, "min": min, "max": max,
-    "sorted": sorted, "round": round, "abs": abs,
-    "int": int, "float": float, "list": list, "dict": dict,
-    "str": str, "bool": bool, "enumerate": enumerate,
-    "zip": zip, "range": range, "any": any, "all": all,
-}
+# Maximum tool calls across the entire agent loop (prevents cost blowup
+# from a single query making N parallel calls × 5 iterations).
+MAX_TOOL_CALLS = 12
+
+# Word-boundary --debug matcher: matches "--debug" only as a whole token.
+_DEBUG_RE = re.compile(r"(?:^|\s)--debug(?:\s|$)")
+
+log = logging.getLogger("red.warera_ask")
 
 
 class WareraAsk(commands.Cog):
@@ -33,6 +36,7 @@ class WareraAsk(commands.Cog):
         self.config.register_guild(allowed_users=[])
 
         self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock = asyncio.Lock()
         self._api_sem = asyncio.Semaphore(8)
         self._schema: list[dict] = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
 
@@ -44,11 +48,14 @@ class WareraAsk(commands.Cog):
         pass
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=15),
-            )
-        return self._session
+        # Lock prevents two concurrent first-callers from creating two sessions
+        # and leaking one of them (no __aexit__ on the orphaned session).
+        async with self._session_lock:
+            if self._session is None or self._session.closed:
+                self._session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=15),
+                )
+            return self._session
 
     async def _api_call(self, endpoint: str, params: dict | None = None) -> Any:
         input_json = urllib.parse.quote(json.dumps(params or {}))
@@ -83,9 +90,11 @@ class WareraAsk(commands.Cog):
     # Command group
     # ------------------------------------------------------------------
 
-    @commands.group(name="wask")
+    @commands.group(name="wask", invoke_without_command=True)
     async def wask(self, ctx: commands.Context):
         """Warera natural language query interface."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
 
     # ------------------------------------------------------------------
     # Owner-only key management
@@ -266,32 +275,6 @@ class WareraAsk(commands.Cog):
 
             all_declarations.append(decl)
 
-        # Special calculate tool
-        all_declarations.append(
-            types.FunctionDeclaration(
-                name="calculate",
-                description=(
-                    "Evaluate a Python expression on data you already fetched. "
-                    "Use for counting, summing, averaging, filtering lists. "
-                    "Pass the expression and the data as JSON string."
-                ),
-                parameters=types.Schema(
-                    type="OBJECT",
-                    properties={
-                        "expression": types.Schema(
-                            type="STRING",
-                            description="Python expression, e.g. 'len([x for x in data if x[\"isCapital\"]])'",
-                        ),
-                        "data": types.Schema(
-                            type="STRING",
-                            description="JSON-encoded data to operate on",
-                        ),
-                    },
-                    required=["expression", "data"],
-                ),
-            )
-        )
-
         return [types.Tool(function_declarations=all_declarations)]
 
     def _build_system_prompt(self) -> str:
@@ -305,7 +288,7 @@ class WareraAsk(commands.Cog):
             "- Format numbers with thousand separators (e.g. 1,234,567).\n"
             "- Format dates as human-readable (e.g. '3 days ago' or 'May 8, 2026').\n"
             "- Call endpoints in sequence if you need data from multiple sources.\n"
-            "- Use the calculate tool for counting, summing, filtering, or math on fetched data.\n"
+            "- For counting/summing/filtering, do the math yourself based on fetched JSON. Be precise.\n"
             "- If the question cannot be answered with available endpoints, say so clearly.\n"
             "- Do NOT make up data. Only use data from API responses.\n"
             "- Maximum 3 sentences in your final answer unless the user asks for detail.\n"
@@ -313,24 +296,13 @@ class WareraAsk(commands.Cog):
 
     async def _execute_tool_call(self, name: str, args: dict) -> str:
         """Execute a single tool call and return result as a string."""
-        if name == "calculate":
-            try:
-                data = json.loads(args["data"])
-                result = eval(
-                    args["expression"],
-                    {"__builtins__": _SAFE_BUILTINS},
-                    {"data": data},
-                )
-                return str(result)
-            except Exception as e:
-                return f"Error: {e}"
-        else:
-            endpoint = name.replace("__", ".")
-            try:
-                result = await self._api_call(endpoint, args)
-                return json.dumps(result, ensure_ascii=False, default=str)
-            except Exception as e:
-                return f"Error calling {endpoint}: {e}"
+        endpoint = name.replace("__", ".")
+        try:
+            result = await self._api_call(endpoint, args)
+            return json.dumps(result, ensure_ascii=False, default=str)
+        except Exception as e:
+            log.warning("API call failed: %s(%r) -> %s", endpoint, args, e)
+            return f"Error calling {endpoint}: {type(e).__name__}"
 
     async def _ask_gemini(self, question: str) -> tuple[str, list[str]]:
         """Run the Gemini agent loop and return (answer, tool_calls_log)."""
@@ -344,6 +316,7 @@ class WareraAsk(commands.Cog):
         tool_calls_log: list[str] = []
 
         contents = [types.Content(role="user", parts=[types.Part(text=question)])]
+        total_calls = 0
 
         for _ in range(5):
             response = await client.aio.models.generate_content(
@@ -355,16 +328,31 @@ class WareraAsk(commands.Cog):
                 ),
             )
 
+            # Gemini may return zero candidates when safety/recitation filters block.
+            if not response.candidates:
+                return ("Maaf, jawaban diblokir oleh filter Gemini.", tool_calls_log)
+
             candidate = response.candidates[0]
+            if candidate.content is None:
+                return ("Maaf, Gemini tidak mengembalikan jawaban.", tool_calls_log)
+
             contents.append(candidate.content)
 
             # Collect function calls from this response
-            fn_calls = [p for p in candidate.content.parts if p.function_call is not None]
+            parts = candidate.content.parts or []
+            fn_calls = [p for p in parts if p.function_call is not None]
 
             if not fn_calls:
                 # No tool calls — extract text answer
-                text_parts = [p.text for p in candidate.content.parts if p.text]
+                text_parts = [p.text for p in parts if p.text]
                 return ("\n".join(text_parts).strip() or "Tidak ada jawaban.", tool_calls_log)
+
+            # Hard cap on total tool calls across the whole loop to bound cost.
+            if total_calls + len(fn_calls) > MAX_TOOL_CALLS:
+                return (
+                    f"Query terlalu kompleks (batas {MAX_TOOL_CALLS} tool call tercapai).",
+                    tool_calls_log,
+                )
 
             # Execute all function calls and collect responses
             fn_responses = []
@@ -373,6 +361,7 @@ class WareraAsk(commands.Cog):
                 args = dict(fc.args)
                 log_entry = f"{fc.name.replace('__', '.')}({json.dumps(args, ensure_ascii=False)})"
                 tool_calls_log.append(log_entry)
+                total_calls += 1
                 result_str = await self._execute_tool_call(fc.name, args)
                 fn_responses.append(
                     types.Part(
@@ -399,8 +388,10 @@ class WareraAsk(commands.Cog):
         Add --debug anywhere in your question to see which API calls were made.
         Example: [p]wask ask How many countries? --debug
         """
-        debug = "--debug" in question
-        question = question.replace("--debug", "").strip()
+        # Use word-boundary regex so "--debug" embedded inside a word
+        # (e.g. "--debuglevel") doesn't trigger and doesn't get stripped.
+        debug = bool(_DEBUG_RE.search(question))
+        question = _DEBUG_RE.sub(" ", question).strip()
 
         if not question:
             await ctx.send_help(ctx.command)
@@ -419,9 +410,15 @@ class WareraAsk(commands.Cog):
                 answer, tool_calls = await self._ask_gemini(question)
                 if len(answer) > 4000:
                     answer = answer[:4000] + "… (truncated)"
-            except Exception as e:
+            except Exception:
+                # Don't leak exception details to Discord — the message can
+                # contain partial keys, internal paths, or full request URLs.
+                log.exception("wask ask failed for question: %s", question[:200])
                 embed = discord.Embed(
-                    description=f"Error: {e}",
+                    description=(
+                        "Terjadi error saat memproses pertanyaan. "
+                        "Periksa log bot untuk detail."
+                    ),
                     colour=discord.Colour.red(),
                 )
                 return await ctx.send(embed=embed)
