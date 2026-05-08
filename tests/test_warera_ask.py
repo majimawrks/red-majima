@@ -22,6 +22,7 @@ def test_endpoint_name_roundtrip():
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     for entry in schema:
         original = entry["endpoint"]
+        assert "__" not in original, f"Schema endpoint {original!r} contains '__' which breaks round-trip"
         mangled = original.replace(".", "__")
         restored = mangled.replace("__", ".")
         assert restored == original, f"Round-trip failed for {original!r}"
