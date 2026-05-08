@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import urllib.parse
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 import aiohttp
@@ -157,6 +158,72 @@ class AllianceMCU(commands.Cog):
     async def _fetch_party(self, party_id: str) -> dict:
         return await self._api_call("party.getById", {"partyId": party_id})
 
+    async def _fetch_battles(self, country_id: str, limit: int = 50) -> list:
+        data = await self._api_call(
+            "battle.getBattles", {"countryId": country_id, "limit": limit},
+        )
+        return data.get("items", []) if isinstance(data, dict) else data
+
+    async def _fetch_battle_country_ranking(self, battle_id: str) -> list:
+        data = await self._api_call(
+            "battleRanking.getRanking",
+            {"battleId": battle_id, "type": "country", "side": "merged", "dataType": "damage"},
+        )
+        return data.get("rankings", [])
+
+    async def _compute_ally_weekly_damage(
+        self, country_id: str, ally_ids: set[str],
+    ) -> dict[str, int]:
+        """Sum per-ally damage from battles involving our country in the last 7 days."""
+        battles = await self._fetch_battles(country_id)
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        recent = []
+        for b in battles:
+            created = b.get("createdAt", "")
+            try:
+                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if dt >= cutoff:
+                recent.append(b)
+
+        # Determine which allies participated in each battle (via countryOrders)
+        battle_allies: dict[str, set[str]] = {}
+        for b in recent:
+            bid = b["_id"]
+            participating = set()
+            for side in ("attacker", "defender"):
+                side_data = b.get(side, {})
+                if side_data.get("country") in (country_id,):
+                    for oid in side_data.get("countryOrders", []):
+                        if oid in ally_ids:
+                            participating.add(oid)
+            if participating:
+                battle_allies[bid] = participating
+
+        if not battle_allies:
+            return {}
+
+        # Fetch country rankings for relevant battles in parallel
+        tasks = [
+            self._fetch_battle_country_ranking(bid) for bid in battle_allies
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        ally_damage: dict[str, int] = {}
+        for bid, result in zip(battle_allies, results):
+            if isinstance(result, Exception):
+                continue
+            participating = battle_allies[bid]
+            for entry in result:
+                # ranking entry has a country field (may be named "_id" or "user" depending on type)
+                cid = entry.get("user") or entry.get("_id", "")
+                if cid in participating:
+                    ally_damage[cid] = ally_damage.get(cid, 0) + int(entry.get("value", 0))
+
+        return ally_damage
+
     async def _resolve_country(self, text: str) -> tuple[str, str] | None:
         countries = await self._fetch_all_countries()
         text_lower = text.lower().strip()
@@ -267,6 +334,8 @@ class AllianceMCU(commands.Cog):
         page: int,
         total: int,
         cache_age: int,
+        ally_dmg_for_us: int = 0,
+        our_country_name: str = "",
     ) -> discord.Embed:
         ally_name = ally.get("name", "???")
         ally_code = ally.get("code", "??").upper()
@@ -285,14 +354,16 @@ class AllianceMCU(commands.Cog):
         )
 
         # Damage stats
+        dmg_lines = [
+            f"Dmg for **{our_country_name}** (7d): **{ally_dmg_for_us:,}**",
+            f"Weekly (all battles): {weekly_dmg:,}",
+            f"Total: {total_dmg:,}",
+            f"Per Citizen (weekly): {dmg_per_citizen:,.0f}",
+            f"Tier: {dmg_tier}",
+        ]
         embed.add_field(
-            name="\U0001f4ca Damage Stats",
-            value=(
-                f"Weekly: **{weekly_dmg:,}**\n"
-                f"Total: **{total_dmg:,}**\n"
-                f"Per Citizen: **{dmg_per_citizen:,.0f}**\n"
-                f"Tier: **{dmg_tier}**"
-            ),
+            name="\U0001f4ca Damage Stats (Weekly)",
+            value="\n".join(dmg_lines),
             inline=True,
         )
 
@@ -338,12 +409,12 @@ class AllianceMCU(commands.Cog):
             inline=False,
         )
 
-        # Alliance cost
+        # Alliance cost (based on damage dealt for our country)
         alliance_bonus_pct = bonus_config.get("alliance_bonus_pct", 10)
         extra_bonus_pct = bonus_config.get("extra_bonus_pct", 0)
         party_bonus_pct = bonuses["total_attack_pct"]
         effective_rate, weekly_cost = self._compute_alliance_cost(
-            weekly_dmg, alliance_bonus_pct, party_bonus_pct, extra_bonus_pct,
+            ally_dmg_for_us, alliance_bonus_pct, party_bonus_pct, extra_bonus_pct,
         )
 
         cost_lines = [
@@ -355,7 +426,7 @@ class AllianceMCU(commands.Cog):
         if extra_bonus_pct:
             cost_lines.append(f"Extra Bonus: **{extra_bonus_pct}%**")
         cost_lines.append(f"Effective Rate: **{effective_rate:.4f}g** / 1k dmg")
-        cost_lines.append(f"Est. Weekly Cost: **{weekly_cost:,.2f}g**")
+        cost_lines.append(f"Est. Weekly Cost: **{weekly_cost:,.2f}g** (7d)")
 
         embed.add_field(
             name="\U0001f4b0 Alliance Cost Estimate",
@@ -475,8 +546,17 @@ class AllianceMCU(commands.Cog):
                 for (aid, _), result in zip(party_ids, results):
                     parties[aid] = result if not isinstance(result, Exception) else None
 
+            # Fetch per-ally damage from battles for our country (last 7 days)
+            try:
+                ally_battle_damage = await self._compute_ally_weekly_damage(
+                    country_id, set(allies_ids),
+                )
+            except Exception:
+                ally_battle_damage = {}
+
         self._mark_used(ctx, "report")
 
+        country_name = country.get("name", "???")
         bonus_config = await self.config.guild(ctx.guild).bonus_config()
         tags = await self.config.guild(ctx.guild).country_tags()
         colour = await ctx.embed_colour()
@@ -500,6 +580,8 @@ class AllianceMCU(commands.Cog):
                 page=len(pages) + 1,
                 total=0,
                 cache_age=cache_age,
+                ally_dmg_for_us=ally_battle_damage.get(aid, 0),
+                our_country_name=country_name,
             )
             pages.append(embed)
 
