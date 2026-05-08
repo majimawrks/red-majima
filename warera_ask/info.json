@@ -1,0 +1,13 @@
+{
+    "author": ["skeith"],
+    "install_msg": "WareraAsk loaded. Use `[p]wask setgemini` to set Gemini key.",
+    "name": "WareraAsk",
+    "disabled": false,
+    "short": "Ask Warera questions in natural language",
+    "description": "Natural language query interface for the Warera game API. Uses Gemini Flash to interpret questions and fetch data.",
+    "tags": ["warera", "game", "ai", "gemini"],
+    "requirements": ["google-genai"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "type": "COG"
+}
