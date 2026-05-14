@@ -16,6 +16,8 @@ from redbot.core.bot import Red
 from .utils import format_end_time, pick_winners
 from .views import (
     RaffleCancelConfirmView,
+    RaffleReviveDurationModal,
+    RaffleReviveSelectView,
     RaffleSelectView,
     RaffleSetupModal,
     ResetConfirmView,
@@ -119,6 +121,28 @@ class Raffle(commands.Cog):
         entry_copy["archived_at"] = now.isoformat()
         history.append(entry_copy)
         path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+    def _load_month_history(self, guild_id: int, month_str: str) -> list:
+        path = self._history_dir(guild_id) / f"{month_str}.json"
+        if not path.exists():
+            return []
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+
+    def _find_archived_raffle(self, guild_id: int, message_id_str: str) -> Optional[dict]:
+        """Search all monthly history files for a raffle by message ID."""
+        history_dir = self._history_dir(guild_id)
+        for path in sorted(history_dir.glob("*.json"), reverse=True):
+            try:
+                history = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            for entry in history:
+                if entry.get("message_id") == message_id_str:
+                    return entry
+        return None
 
     async def _get_bot_prefix(self, guild: discord.Guild) -> str:
         """Get the first valid prefix for DM messages (G6)."""
@@ -687,6 +711,90 @@ class Raffle(commands.Cog):
         except discord.HTTPException:
             pass
 
+    async def _do_revive(
+        self,
+        interaction: discord.Interaction,
+        ctx: commands.Context,
+        entry: dict,
+        duration,
+    ):
+        """Post a new raffle from an archived entry, restoring participants."""
+        guild = ctx.guild
+        await interaction.response.defer(ephemeral=True)
+
+        if not await self._slot_available(ctx):
+            await interaction.followup.send(
+                "❌ A raffle is already running in this guild. "
+                "Enable multi-raffle (`setraffle multiconf`) or wait for it to end.",
+                ephemeral=True,
+            )
+            return
+
+        channel = guild.get_channel_or_thread(entry["channel_id"])
+        if not channel:
+            await interaction.followup.send(
+                "❌ The original channel no longer exists.", ephemeral=True
+            )
+            return
+
+        tz_name = await self.config.guild(guild).timezone()
+        end_ts = time.time() + duration.total_seconds()
+        end_str = format_end_time(end_ts, tz_name)
+        method_str = "Auto-draw" if entry["draw_type"] == "auto" else "Manual draw"
+
+        colour = await ctx.embed_colour()
+        embed = discord.Embed(
+            title=f"{entry['emoji']} {entry['name']}",
+            description=f"React with {entry['emoji']} to enter!",
+            colour=colour,
+        )
+        embed.add_field(name="Ends", value=end_str, inline=True)
+        embed.add_field(name="Winners", value=str(entry["winner_count"]), inline=True)
+        embed.add_field(name="Method", value=method_str, inline=True)
+
+        creator = guild.get_member(entry["creator_id"])
+        host_name = creator.display_name if creator else "Unknown"
+        participants = list(entry.get("participants", []))
+        embed.set_footer(
+            text=f"Hosted by {host_name} · Participants: {len(participants)}"
+        )
+
+        try:
+            msg = await channel.send(embed=embed)
+        except discord.HTTPException as exc:
+            await interaction.followup.send(
+                f"❌ Failed to post raffle: {exc}", ephemeral=True
+            )
+            return
+
+        try:
+            await msg.add_reaction(entry["emoji"])
+        except discord.HTTPException:
+            pass
+
+        new_entry = {
+            "name": entry["name"],
+            "emoji": entry["emoji"],
+            "channel_id": channel.id,
+            "creator_id": entry["creator_id"],
+            "end_time": end_ts,
+            "winner_count": entry["winner_count"],
+            "draw_type": entry["draw_type"],
+            "status": "active",
+            "participants": participants,
+            "winners": [],
+        }
+        async with self.config.guild(guild).raffles() as raffles:
+            raffles[str(msg.id)] = new_entry
+
+        delay = duration.total_seconds()
+        if entry["draw_type"] == "auto":
+            self._schedule_auto_draw(guild, msg.id, delay)
+        else:
+            self._schedule_manual_notify(guild, msg.id, delay)
+
+        await interaction.followup.send("✅ Raffle revived!", ephemeral=True)
+
     @raffle.command(name="end")
     async def raffle_end(self, ctx: commands.Context):
         """Trigger the winner draw for a raffle.
@@ -725,6 +833,51 @@ class Raffle(commands.Cog):
             # G7: RaffleSelectView → _RaffleSelectMenu will show RaffleCancelConfirmView
             view = RaffleSelectView(self, ctx, visible, action="cancel")
             msg = await ctx.send("Which raffle do you want to cancel?", view=view)
+            view.message = msg
+
+    @raffle.command(name="revive")
+    async def raffle_revive(self, ctx: commands.Context, message_id: Optional[int] = None):
+        """Revive an ended or cancelled raffle with its original settings and participants.
+
+        Optionally provide the original raffle message ID to skip the selection menu.
+        Example: [p]raffle revive 1234567890
+        """
+        if not await self._can_start(ctx):
+            await ctx.maybe_send_embed("You don't have permission to revive a raffle.")
+            return
+
+        if message_id is not None:
+            entry = self._find_archived_raffle(ctx.guild.id, str(message_id))
+            if entry is None:
+                await ctx.maybe_send_embed(
+                    f"❌ No archived raffle found with message ID `{message_id}`."
+                )
+                return
+            participant_count = len(entry.get("participants", []))
+            view = _ModalTriggerView(
+                RaffleReviveDurationModal(self, ctx, entry),
+                label="Revive Raffle",
+                author_id=ctx.author.id,
+            )
+            msg = await ctx.send(
+                f"Reviving **{entry['name']}** ({participant_count} participants restored). "
+                "Click to set new duration:",
+                view=view,
+            )
+            view.message = msg
+        else:
+            month = datetime.now(timezone.utc).strftime("%Y-%m")
+            history = self._load_month_history(ctx.guild.id, month)
+            ended = [e for e in history if e.get("status") in ("ended", "cancelled")]
+            if not ended:
+                await ctx.maybe_send_embed(
+                    f"No ended or cancelled raffles found for **{month}**."
+                )
+                return
+            # Most recent first, capped at Discord's select menu limit of 25
+            ended = list(reversed(ended))[:25]
+            view = RaffleReviveSelectView(self, ctx, ended)
+            msg = await ctx.send("Which raffle do you want to revive?", view=view)
             view.message = msg
 
     async def _do_cancel(

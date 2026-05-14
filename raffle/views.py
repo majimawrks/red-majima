@@ -209,7 +209,7 @@ class RaffleSelectView(discord.ui.View):
 
         options = []
         for msg_id, entry in raffles.items():
-            ch = ctx.guild.get_channel(entry["channel_id"])
+            ch = ctx.guild.get_channel_or_thread(entry["channel_id"])
             ch_name = f"#{ch.name}" if ch else "#?"
             options.append(
                 discord.SelectOption(
@@ -284,6 +284,75 @@ class RaffleCancelConfirmView(discord.ui.View):
                 await self.message.edit(content="Cancellation timed out.", view=None)
             except discord.HTTPException:
                 pass
+
+
+class RaffleReviveDurationModal(discord.ui.Modal):
+    duration_input = discord.ui.TextInput(
+        label="New Duration",
+        placeholder="e.g. 2h, 1d, 30m",
+        min_length=2,
+        max_length=6,
+    )
+
+    def __init__(self, cog, ctx, entry: dict):
+        super().__init__(title=f"Revive: {entry['name'][:40]}")
+        self.cog = cog
+        self.ctx = ctx
+        self.entry = entry
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from .utils import parse_duration
+
+        duration = parse_duration(self.duration_input.value.strip())
+        if duration is None:
+            await interaction.response.send_message(
+                "❌ Invalid duration. Use formats like `2h`, `1d`, `30m`.",
+                ephemeral=True,
+            )
+            return
+        await self.cog._do_revive(interaction, self.ctx, self.entry, duration)
+
+
+class RaffleReviveSelectView(discord.ui.View):
+    """Select which archived raffle to revive."""
+
+    def __init__(self, cog, ctx, entries: list):
+        super().__init__(timeout=60)
+        self.message: Optional[discord.Message] = None
+        self.add_item(_RaffleReviveSelectMenu(entries, cog, ctx))
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+
+class _RaffleReviveSelectMenu(discord.ui.Select):
+    def __init__(self, entries: list, cog, ctx):
+        self._entries = {str(e["message_id"]): e for e in entries}
+        options = []
+        for entry in entries:
+            status_icon = "🎉" if entry.get("status") == "ended" else "❌"
+            participant_count = len(entry.get("participants", []))
+            options.append(
+                discord.SelectOption(
+                    label=entry["name"][:100],
+                    value=str(entry["message_id"]),
+                    description=f"{status_icon} {participant_count} participants",
+                )
+            )
+        super().__init__(placeholder="Select a raffle to revive...", options=options)
+        self.cog = cog
+        self.ctx = ctx
+
+    async def callback(self, interaction: discord.Interaction):
+        entry = self._entries[self.values[0]]
+        await interaction.response.send_modal(
+            RaffleReviveDurationModal(self.cog, self.ctx, entry)
+        )
+        self.view.stop()
 
 
 class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
