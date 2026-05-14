@@ -7,7 +7,7 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import discord
 from redbot.core import Config, commands, data_manager
@@ -257,7 +257,7 @@ class Raffle(commands.Cog):
         """Raffle commands."""
 
     @raffle.command(name="start")
-    async def raffle_start(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+    async def raffle_start(self, ctx: commands.Context, channel: Optional[Union[discord.TextChannel, discord.Thread]] = None):
         """Open the raffle setup wizard.
 
         Optionally provide a target channel where the raffle will be posted.
@@ -331,7 +331,7 @@ class Raffle(commands.Cog):
         duration,
         winner_count: int,
         draw_type: str,
-        target_channel: Optional[discord.TextChannel] = None,
+        target_channel: Optional[Union[discord.TextChannel, discord.Thread]] = None,
     ):
         post_channel = target_channel or ctx.channel
         tz_name = await self.config.guild(ctx.guild).timezone()
@@ -474,7 +474,7 @@ class Raffle(commands.Cog):
         message_id: int,
         entry: dict,
     ):
-        channel = guild.get_channel(channel_id)
+        channel = guild.get_channel_or_thread(channel_id)
         if not channel:
             return
         try:
@@ -500,7 +500,7 @@ class Raffle(commands.Cog):
         self,
         guild: discord.Guild,
         message_id: int,
-        result_channel: Optional[discord.TextChannel] = None,
+        result_channel: Optional[Union[discord.TextChannel, discord.Thread]] = None,
     ):
         """Run the winner draw, collapse the raffle embed, post result separately.
 
@@ -518,7 +518,7 @@ class Raffle(commands.Cog):
             entry["participants"] = list(raffles[key]["participants"])
             raffles.pop(key, None)
 
-        raffle_channel = guild.get_channel(entry["channel_id"])
+        raffle_channel = guild.get_channel_or_thread(entry["channel_id"])
         if not raffle_channel:
             return
         try:
@@ -599,7 +599,7 @@ class Raffle(commands.Cog):
         if key not in raffles or raffles[key]["status"] != "active":
             return
         entry = raffles[key]
-        channel = guild.get_channel(entry["channel_id"])
+        channel = guild.get_channel_or_thread(entry["channel_id"])
         creator = guild.get_member(entry["creator_id"])
 
         # Edit announcement embed
@@ -757,7 +757,7 @@ class Raffle(commands.Cog):
             task.cancel()
 
         # Edit announcement embed
-        channel = guild.get_channel(entry["channel_id"])
+        channel = guild.get_channel_or_thread(entry["channel_id"])
         if channel:
             try:
                 msg = await channel.fetch_message(message_id)
