@@ -356,6 +356,10 @@ class Raffle(commands.Cog):
             return True
         return False
 
+    def _is_privileged(self, ctx: commands.Context) -> bool:
+        perms = ctx.author.guild_permissions
+        return perms.administrator or perms.manage_channels or perms.moderate_members
+
     async def _slot_available(self, ctx: commands.Context) -> bool:
         """Check whether a new raffle can start (respects multiconf)."""
         multi = await self.config.guild(ctx.guild).multi()
@@ -865,9 +869,11 @@ class Raffle(commands.Cog):
             await ctx.maybe_send_embed("You don't have permission to revive a raffle.")
             return
 
+        privileged = self._is_privileged(ctx)
+
         if message_id is not None:
             entry = self._find_archived_raffle(ctx.guild.id, str(message_id))
-            if entry is None:
+            if entry is None or (not privileged and entry.get("creator_id") != ctx.author.id):
                 await ctx.maybe_send_embed(
                     f"❌ No archived raffle found with message ID `{message_id}`."
                 )
@@ -887,7 +893,11 @@ class Raffle(commands.Cog):
         else:
             month = datetime.now(timezone.utc).strftime("%Y-%m")
             history = self._load_month_history(ctx.guild.id, month)
-            ended = [e for e in history if e.get("status") in ("ended", "cancelled")]
+            ended = [
+                e for e in history
+                if e.get("status") in ("ended", "cancelled")
+                and (privileged or e.get("creator_id") == ctx.author.id)
+            ]
             if not ended:
                 await ctx.maybe_send_embed(
                     f"No ended or cancelled raffles found for **{month}**."
@@ -942,9 +952,15 @@ class Raffle(commands.Cog):
             await ctx.maybe_send_embed("You don't have permission to repick raffle winners.")
             return
 
+        privileged = self._is_privileged(ctx)
+
         if message_id is not None:
             entry = self._find_archived_raffle(ctx.guild.id, str(message_id))
-            if entry is None or entry.get("status") != "ended":
+            if (
+                entry is None
+                or entry.get("status") != "ended"
+                or (not privileged and entry.get("creator_id") != ctx.author.id)
+            ):
                 await ctx.maybe_send_embed(
                     f"❌ No ended raffle found with message ID `{message_id}`."
                 )
@@ -953,7 +969,11 @@ class Raffle(commands.Cog):
         else:
             month = datetime.now(timezone.utc).strftime("%Y-%m")
             history = self._load_month_history(ctx.guild.id, month)
-            ended = [e for e in history if e.get("status") == "ended"]
+            ended = [
+                e for e in history
+                if e.get("status") == "ended"
+                and (privileged or e.get("creator_id") == ctx.author.id)
+            ]
             if not ended:
                 await ctx.maybe_send_embed(
                     f"No ended raffles found for **{month}**."
