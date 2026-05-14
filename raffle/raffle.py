@@ -565,21 +565,39 @@ class Raffle(commands.Cog):
             entry["participants"] = list(raffles[key]["participants"])
             raffles.pop(key, None)
 
-        raffle_channel = guild.get_channel_or_thread(entry["channel_id"])
-        if not raffle_channel:
-            return
-        try:
-            msg = await raffle_channel.fetch_message(message_id)
-        except discord.HTTPException:
-            return
-
         participants = entry["participants"]
         winner_ids = pick_winners(participants, entry["winner_count"])
         creator = guild.get_member(entry["creator_id"])
         host_name = creator.display_name if creator else "Unknown"
 
+        # Archive immediately — the raffle is already removed from Config above,
+        # so this must happen before any network calls that could fail and leave
+        # the entry unrecoverable (e.g. Discord-archived thread not in cache).
+        entry["status"] = "ended"
+        entry["winners"] = winner_ids
+        self._archive_raffle(guild.id, key, entry)
+        self._draw_tasks.pop((guild.id, message_id), None)
+
+        # Resolve the raffle channel. get_channel_or_thread() only searches the
+        # in-memory cache; Discord-archived threads fall out of cache but still
+        # exist, so fall back to an API call for those.
+        raffle_channel = guild.get_channel_or_thread(entry["channel_id"])
+        if not raffle_channel:
+            try:
+                raffle_channel = await self.bot.fetch_channel(entry["channel_id"])
+            except discord.HTTPException:
+                raffle_channel = None
+
+        # Fetch the original raffle message for animation + tombstone edit.
+        msg = None
+        if raffle_channel:
+            try:
+                msg = await raffle_channel.fetch_message(message_id)
+            except discord.HTTPException:
+                pass
+
         # Rolling animation (4 frames, 0.8s apart) on the original embed
-        if participants:
+        if msg and participants:
             colour = discord.Colour.gold()
             for _ in range(4):
                 candidate = guild.get_member(random.choice(participants))
@@ -596,48 +614,43 @@ class Raffle(commands.Cog):
                 await asyncio.sleep(0.8)
 
         # Collapse original embed to a minimal tombstone
-        ended_embed = discord.Embed(
-            title=f"{entry['emoji']} {entry['name']}",
-            colour=discord.Colour.greyple(),
-        )
-        ended_embed.set_footer(
-            text=f"Raffle ended · Hosted by {host_name} · {len(participants)} participants"
-        )
-        try:
-            await msg.edit(embed=ended_embed)
-        except discord.HTTPException:
-            pass
+        if msg:
+            ended_embed = discord.Embed(
+                title=f"{entry['emoji']} {entry['name']}",
+                colour=discord.Colour.greyple(),
+            )
+            ended_embed.set_footer(
+                text=f"Raffle ended · Hosted by {host_name} · {len(participants)} participants"
+            )
+            try:
+                await msg.edit(embed=ended_embed)
+            except discord.HTTPException:
+                pass
 
         # Build and post winner result as a new message
-        if not winner_ids:
-            description = "No one entered this raffle."
-        elif len(winner_ids) < entry["winner_count"]:
-            mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
-            description = f"All participants win!\n{mentions}"
-        else:
-            mentions = "\n".join(f"🥇 <@{uid}>" for uid in winner_ids)
-            description = f"Congratulations to:\n{mentions}"
-
-        result_embed = discord.Embed(
-            title=f"🎉 {entry['name']} — Winners!",
-            description=description,
-            colour=discord.Colour.gold(),
-        )
-        result_embed.set_footer(
-            text=f"Hosted by {host_name} · {len(participants)} participants"
-        )
         post_to = result_channel or raffle_channel
-        try:
-            await post_to.send(embed=result_embed)
-        except discord.HTTPException:
-            pass
+        if post_to:
+            if not winner_ids:
+                description = "No one entered this raffle."
+            elif len(winner_ids) < entry["winner_count"]:
+                mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
+                description = f"All participants win!\n{mentions}"
+            else:
+                mentions = "\n".join(f"🥇 <@{uid}>" for uid in winner_ids)
+                description = f"Congratulations to:\n{mentions}"
 
-        # Archive to disk (G8) — entry already removed from Config above
-        entry["status"] = "ended"
-        entry["winners"] = winner_ids
-        self._archive_raffle(guild.id, key, entry)
-
-        self._draw_tasks.pop((guild.id, message_id), None)
+            result_embed = discord.Embed(
+                title=f"🎉 {entry['name']} — Winners!",
+                description=description,
+                colour=discord.Colour.gold(),
+            )
+            result_embed.set_footer(
+                text=f"Hosted by {host_name} · {len(participants)} participants"
+            )
+            try:
+                await post_to.send(embed=result_embed)
+            except discord.HTTPException:
+                pass
 
     async def _notify_manual_end(self, guild: discord.Guild, message_id: int):
         """Edit announcement embed and DM creator when manual raffle duration ends."""
