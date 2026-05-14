@@ -355,6 +355,50 @@ class _RaffleReviveSelectMenu(discord.ui.Select):
         self.view.stop()
 
 
+class RaffleRepickSelectView(discord.ui.View):
+    """Select which ended raffle to repick winners for."""
+
+    def __init__(self, cog, ctx, entries: list):
+        super().__init__(timeout=60)
+        self.message: Optional[discord.Message] = None
+        self.add_item(_RaffleRepickSelectMenu(entries, cog, ctx))
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+
+class _RaffleRepickSelectMenu(discord.ui.Select):
+    def __init__(self, entries: list, cog, ctx):
+        self._entries = {str(e["message_id"]): e for e in entries}
+        options = []
+        for entry in entries:
+            participant_count = len(entry.get("participants", []))
+            options.append(
+                discord.SelectOption(
+                    label=entry["name"][:100],
+                    value=str(entry["message_id"]),
+                    description=f"🎉 {participant_count} participants",
+                )
+            )
+        super().__init__(placeholder="Select a raffle to repick...", options=options)
+        self.cog = cog
+        self.ctx = ctx
+
+    async def callback(self, interaction: discord.Interaction):
+        entry = self._entries[self.values[0]]
+        await interaction.response.edit_message(content="Repicking winners...", view=None)
+        await self.cog._do_repick(self.ctx, entry)
+        self.view.stop()
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+
+
 class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
     tz_input = discord.ui.TextInput(
         label="Timezone",

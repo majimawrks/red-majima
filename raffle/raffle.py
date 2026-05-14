@@ -16,6 +16,7 @@ from redbot.core.bot import Red
 from .utils import format_end_time, pick_winners
 from .views import (
     RaffleCancelConfirmView,
+    RaffleRepickSelectView,
     RaffleReviveDurationModal,
     RaffleReviveSelectView,
     RaffleSelectView,
@@ -121,6 +122,24 @@ class Raffle(commands.Cog):
         entry_copy["archived_at"] = now.isoformat()
         history.append(entry_copy)
         path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+    def _update_archive_winners(self, guild_id: int, message_id_str: str, winner_ids: list):
+        """Overwrite the winners field for a specific archived raffle entry."""
+        history_dir = self._history_dir(guild_id)
+        for path in history_dir.glob("*.json"):
+            try:
+                history = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            changed = False
+            for entry in history:
+                if entry.get("message_id") == message_id_str:
+                    entry["winners"] = winner_ids
+                    changed = True
+                    break
+            if changed:
+                path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+                return
 
     def _load_month_history(self, guild_id: int, month_str: str) -> list:
         path = self._history_dir(guild_id) / f"{month_str}.json"
@@ -878,6 +897,71 @@ class Raffle(commands.Cog):
             ended = list(reversed(ended))[:25]
             view = RaffleReviveSelectView(self, ctx, ended)
             msg = await ctx.send("Which raffle do you want to revive?", view=view)
+            view.message = msg
+
+    async def _do_repick(self, ctx: commands.Context, entry: dict):
+        """Re-pick winners from an archived ended raffle and post the result."""
+        participants = entry.get("participants", [])
+        winner_ids = pick_winners(participants, entry["winner_count"])
+
+        creator = ctx.guild.get_member(entry["creator_id"])
+        host_name = creator.display_name if creator else "Unknown"
+
+        if not winner_ids:
+            description = "No one entered this raffle."
+        elif len(winner_ids) < entry["winner_count"]:
+            mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
+            description = f"All participants win!\n{mentions}"
+        else:
+            mentions = "\n".join(f"🥇 <@{uid}>" for uid in winner_ids)
+            description = f"Congratulations to:\n{mentions}"
+
+        result_embed = discord.Embed(
+            title=f"🎉 {entry['name']} — Winners (Repick)!",
+            description=description,
+            colour=discord.Colour.gold(),
+        )
+        result_embed.set_footer(
+            text=f"Hosted by {host_name} · {len(participants)} participants"
+        )
+        try:
+            await ctx.send(embed=result_embed)
+        except discord.HTTPException:
+            pass
+
+        self._update_archive_winners(ctx.guild.id, entry["message_id"], winner_ids)
+
+    @raffle.command(name="repick")
+    async def raffle_repick(self, ctx: commands.Context, message_id: Optional[int] = None):
+        """Re-pick winners for an ended raffle without reviving it.
+
+        Optionally provide the original raffle message ID to skip the selection menu.
+        Example: [p]raffle repick 1234567890
+        """
+        if not await self._can_start(ctx):
+            await ctx.maybe_send_embed("You don't have permission to repick raffle winners.")
+            return
+
+        if message_id is not None:
+            entry = self._find_archived_raffle(ctx.guild.id, str(message_id))
+            if entry is None or entry.get("status") != "ended":
+                await ctx.maybe_send_embed(
+                    f"❌ No ended raffle found with message ID `{message_id}`."
+                )
+                return
+            await self._do_repick(ctx, entry)
+        else:
+            month = datetime.now(timezone.utc).strftime("%Y-%m")
+            history = self._load_month_history(ctx.guild.id, month)
+            ended = [e for e in history if e.get("status") == "ended"]
+            if not ended:
+                await ctx.maybe_send_embed(
+                    f"No ended raffles found for **{month}**."
+                )
+                return
+            ended = list(reversed(ended))[:25]
+            view = RaffleRepickSelectView(self, ctx, ended)
+            msg = await ctx.send("Which raffle do you want to repick winners for?", view=view)
             view.message = msg
 
     async def _do_cancel(
