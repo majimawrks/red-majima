@@ -13,7 +13,6 @@ class _ModalTriggerView(discord.ui.View):
         self.modal = modal
         self.author_id = author_id
         self.message: Optional[discord.Message] = None
-        # G5: set label on the button instance, not the descriptor
         self.children[0].label = label
 
     @discord.ui.button(label="Open", style=discord.ButtonStyle.primary)
@@ -23,6 +22,11 @@ class _ModalTriggerView(discord.ui.View):
             return
         await interaction.response.send_modal(self.modal)
         self.stop()
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
 
     async def on_timeout(self):
         if self.message:
@@ -73,7 +77,6 @@ class RaffleSetupModal(discord.ui.Modal, title="Start a Raffle"):
         raw_duration = self.duration_input.value.strip()
         raw_winners = self.winners_input.value.strip()
 
-        # G4: validate emoji only when user supplied one (blank → default 🎉 already set)
         if emoji != "🎉" and not validate_emoji(emoji):
             await interaction.response.send_message(
                 "❌ Invalid emoji. Use a Unicode emoji (🎉) or custom emoji (<:name:id>).",
@@ -240,7 +243,6 @@ class _RaffleSelectMenu(discord.ui.Select):
         if self.action == "end":
             await self.cog._do_draw(interaction, self.ctx.guild, msg_id)
         else:
-            # G7: always show confirmation for cancel, even from multi-select
             raffles = await self.cog.config.guild(self.ctx.guild).raffles()
             entry = raffles.get(str(msg_id))
             if not entry:
@@ -249,6 +251,7 @@ class _RaffleSelectMenu(discord.ui.Select):
                 )
                 return
             view = RaffleCancelConfirmView(self.cog, self.ctx, self.ctx.guild, msg_id)
+            view.message = self.view.message
             await interaction.response.edit_message(
                 content=f"Cancel raffle **{entry['name']}**? This cannot be undone.",
                 view=view,
@@ -413,7 +416,6 @@ class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
         self.ctx = ctx
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Deferred import to avoid circular: views.py <- raffle.py <- views.py
         from .utils import validate_timezone
 
         value = self.tz_input.value.strip()
