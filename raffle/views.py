@@ -4,6 +4,8 @@ from typing import Optional
 
 import discord
 
+OTHER_MARKER = "👑 "
+
 
 class _ModalTriggerView(discord.ui.View):
     """Single-button view that opens a Modal on click. Reused for tzconf and raffle start."""
@@ -178,7 +180,7 @@ class RaffleConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ Start", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Not your raffle.", ephemeral=True)
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
             return
         await interaction.response.edit_message(content="Starting raffle...", embed=None, view=None)
         await self.cog._launch_raffle(
@@ -190,6 +192,9 @@ class RaffleConfirmView(discord.ui.View):
 
     @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
         await interaction.response.edit_message(
             content="Raffle setup cancelled.", embed=None, view=None
         )
@@ -214,9 +219,11 @@ class RaffleSelectView(discord.ui.View):
         for msg_id, entry in raffles.items():
             ch = ctx.guild.get_channel_or_thread(entry["channel_id"])
             ch_name = f"#{ch.name}" if ch else "#?"
+            is_others = entry["creator_id"] != ctx.author.id
+            label = (OTHER_MARKER if is_others else "") + entry["name"]
             options.append(
                 discord.SelectOption(
-                    label=entry["name"][:100],
+                    label=label[:100],
                     value=msg_id,
                     description=ch_name,
                 )
@@ -239,6 +246,9 @@ class _RaffleSelectMenu(discord.ui.Select):
         self.action = action
 
     async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
         msg_id = int(self.values[0])
         if self.action == "end":
             await self.cog._do_draw(interaction, self.ctx.guild, msg_id)
@@ -271,13 +281,16 @@ class RaffleCancelConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ Confirm Cancel", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Not your action.", ephemeral=True)
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
             return
         await self.cog._do_cancel(interaction, self.guild, self.message_id)
         self.stop()
 
     @discord.ui.button(label="Keep Running", style=discord.ButtonStyle.secondary)
     async def keep(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
         await interaction.response.edit_message(content="Cancellation aborted.", view=None)
         self.stop()
 
@@ -339,9 +352,11 @@ class _RaffleReviveSelectMenu(discord.ui.Select):
         for entry in entries:
             status_icon = "🎉" if entry.get("status") == "ended" else "❌"
             participant_count = len(entry.get("participants", []))
+            is_others = entry.get("creator_id") != ctx.author.id
+            label = (OTHER_MARKER if is_others else "") + entry["name"]
             options.append(
                 discord.SelectOption(
-                    label=entry["name"][:100],
+                    label=label[:100],
                     value=str(entry["message_id"]),
                     description=f"{status_icon} {participant_count} participants",
                 )
@@ -351,6 +366,9 @@ class _RaffleReviveSelectMenu(discord.ui.Select):
         self.ctx = ctx
 
     async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
         entry = self._entries[self.values[0]]
         await interaction.response.send_modal(
             RaffleReviveDurationModal(self.cog, self.ctx, entry)
@@ -380,9 +398,11 @@ class _RaffleRepickSelectMenu(discord.ui.Select):
         options = []
         for entry in entries:
             participant_count = len(entry.get("participants", []))
+            is_others = entry.get("creator_id") != ctx.author.id
+            label = (OTHER_MARKER if is_others else "") + entry["name"]
             options.append(
                 discord.SelectOption(
-                    label=entry["name"][:100],
+                    label=label[:100],
                     value=str(entry["message_id"]),
                     description=f"🎉 {participant_count} participants",
                 )
@@ -392,6 +412,9 @@ class _RaffleRepickSelectMenu(discord.ui.Select):
         self.ctx = ctx
 
     async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
         entry = self._entries[self.values[0]]
         await interaction.response.edit_message(content="Repicking winners...", view=None)
         await self.cog._do_repick(self.ctx, entry)
@@ -443,7 +466,7 @@ class ResetConfirmView(discord.ui.View):
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("Not your reset.", ephemeral=True)
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
             return
         cfg = self.cog.config.guild(self.ctx.guild)
         t = self.target
@@ -464,6 +487,9 @@ class ResetConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This isn't for you.", ephemeral=True)
+            return
         await interaction.response.edit_message(content="Reset cancelled.", view=None)
         self.stop()
 

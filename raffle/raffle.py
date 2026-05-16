@@ -271,7 +271,7 @@ class Raffle(commands.Cog):
             label="Set Timezone",
             author_id=ctx.author.id,
         )
-        msg = await ctx.send("Click to set timezone:", view=view, ephemeral=True)
+        msg = await ctx.send("Click to set timezone:", view=view)
         view.message = msg
 
     _RESET_TARGETS = {"base", "multi", "role", "member", "tz", "all"}
@@ -289,7 +289,7 @@ class Raffle(commands.Cog):
             )
             return
         view = ResetConfirmView(self, ctx, target)
-        msg = await ctx.send(f"Reset **{target}** to defaults. Are you sure?", view=view, ephemeral=True)
+        msg = await ctx.send(f"Reset **{target}** to defaults. Are you sure?", view=view)
         view.message = msg
 
     # ── raffle ────────────────────────────────────────────────────────
@@ -307,13 +307,12 @@ class Raffle(commands.Cog):
         Example: [p]raffle start #giveaways
         """
         if not await self._can_start(ctx):
-            await ctx.send("You don't have permission to start a raffle.", ephemeral=True)
+            await ctx.maybe_send_embed("You don't have permission to start a raffle.")
             return
         if not await self._slot_available(ctx):
-            await ctx.send(
+            await ctx.maybe_send_embed(
                 "A raffle is already running in this guild. "
-                "Enable multi-raffle (`setraffle multiconf`) or wait for it to end.",
-                ephemeral=True,
+                "Enable multi-raffle (`setraffle multiconf`) or wait for it to end."
             )
             return
         if channel is not None:
@@ -328,10 +327,9 @@ class Raffle(commands.Cog):
             if not perms.read_message_history:
                 missing.append("Read Message History")
             if missing:
-                await ctx.send(
+                await ctx.maybe_send_embed(
                     f"❌ I'm missing permissions in {channel.mention}: "
-                    + ", ".join(f"**{p}**" for p in missing),
-                    ephemeral=True,
+                    + ", ".join(f"**{p}**" for p in missing)
                 )
                 return
         view = _ModalTriggerView(
@@ -339,7 +337,7 @@ class Raffle(commands.Cog):
             label="Set Up Raffle",
             author_id=ctx.author.id,
         )
-        msg = await ctx.send("Click to start the raffle setup:", view=view, ephemeral=True)
+        msg = await ctx.send("Click to start the raffle setup:", view=view)
         view.message = msg
 
     async def _can_start(self, ctx: commands.Context) -> bool:
@@ -829,7 +827,7 @@ class Raffle(commands.Cog):
         else:
             self._schedule_manual_notify(guild, msg.id, delay)
 
-        await interaction.followup.send("✅ Raffle revived!", ephemeral=True)
+        await interaction.followup.send("✅ Raffle revived!")
 
     @raffle.command(name="end")
     async def raffle_end(self, ctx: commands.Context):
@@ -840,14 +838,14 @@ class Raffle(commands.Cog):
         """
         visible = await self._get_visible_raffles(ctx)
         if not visible:
-            await ctx.send("No active raffles you can draw.", ephemeral=True)
+            await ctx.maybe_send_embed("No active raffles you can draw.")
             return
         if len(visible) == 1:
             msg_id = int(next(iter(visible)))
             await self._do_draw_ctx(ctx, ctx.guild, msg_id)
         else:
             view = RaffleSelectView(self, ctx, visible, action="end")
-            msg = await ctx.send("Which raffle do you want to draw?", view=view, ephemeral=True)
+            msg = await ctx.send("Which raffle do you want to draw?", view=view)
             view.message = msg
 
     @raffle.command(name="cancel")
@@ -855,7 +853,7 @@ class Raffle(commands.Cog):
         """Cancel an active raffle."""
         visible = await self._get_visible_raffles(ctx)
         if not visible:
-            await ctx.send("No active raffles to cancel.", ephemeral=True)
+            await ctx.maybe_send_embed("No active raffles to cancel.")
             return
         if len(visible) == 1:
             msg_id = int(next(iter(visible)))
@@ -863,12 +861,12 @@ class Raffle(commands.Cog):
             view = RaffleCancelConfirmView(self, ctx, ctx.guild, msg_id)
             msg = await ctx.send(
                 f"Cancel raffle **{entry['name']}**? This cannot be undone.",
-                view=view, ephemeral=True,
+                view=view,
             )
             view.message = msg
         else:
             view = RaffleSelectView(self, ctx, visible, action="cancel")
-            msg = await ctx.send("Which raffle do you want to cancel?", view=view, ephemeral=True)
+            msg = await ctx.send("Which raffle do you want to cancel?", view=view)
             view.message = msg
 
     @raffle.command(name="revive")
@@ -879,7 +877,7 @@ class Raffle(commands.Cog):
         Example: [p]raffle revive 1234567890
         """
         if not await self._can_start(ctx):
-            await ctx.send("You don't have permission to revive a raffle.", ephemeral=True)
+            await ctx.maybe_send_embed("You don't have permission to revive a raffle.")
             return
 
         privileged = self._is_privileged(ctx)
@@ -887,9 +885,8 @@ class Raffle(commands.Cog):
         if message_id is not None:
             entry = self._find_archived_raffle(ctx.guild.id, str(message_id))
             if entry is None or (not privileged and entry.get("creator_id") != ctx.author.id):
-                await ctx.send(
-                    f"❌ No archived raffle found with message ID `{message_id}`.",
-                    ephemeral=True,
+                await ctx.maybe_send_embed(
+                    f"❌ No archived raffle found with message ID `{message_id}`."
                 )
                 return
             participant_count = len(entry.get("participants", []))
@@ -902,7 +899,6 @@ class Raffle(commands.Cog):
                 f"Reviving **{entry['name']}** ({participant_count} participants restored). "
                 "Click to set new duration:",
                 view=view,
-                ephemeral=True,
             )
             view.message = msg
         else:
@@ -914,15 +910,14 @@ class Raffle(commands.Cog):
                 and (privileged or e.get("creator_id") == ctx.author.id)
             ]
             if not ended:
-                await ctx.send(
-                    f"No ended or cancelled raffles found for **{month}**.",
-                    ephemeral=True,
+                await ctx.maybe_send_embed(
+                    f"No ended or cancelled raffles found for **{month}**."
                 )
                 return
             # Most recent first, capped at Discord's select menu limit of 25
             ended = list(reversed(ended))[:25]
             view = RaffleReviveSelectView(self, ctx, ended)
-            msg = await ctx.send("Which raffle do you want to revive?", view=view, ephemeral=True)
+            msg = await ctx.send("Which raffle do you want to revive?", view=view)
             view.message = msg
 
     async def _do_repick(self, ctx: commands.Context, entry: dict):
@@ -965,7 +960,7 @@ class Raffle(commands.Cog):
         Example: [p]raffle repick 1234567890
         """
         if not await self._can_start(ctx):
-            await ctx.send("You don't have permission to repick raffle winners.", ephemeral=True)
+            await ctx.maybe_send_embed("You don't have permission to repick raffle winners.")
             return
 
         privileged = self._is_privileged(ctx)
@@ -977,9 +972,8 @@ class Raffle(commands.Cog):
                 or entry.get("status") != "ended"
                 or (not privileged and entry.get("creator_id") != ctx.author.id)
             ):
-                await ctx.send(
-                    f"❌ No ended raffle found with message ID `{message_id}`.",
-                    ephemeral=True,
+                await ctx.maybe_send_embed(
+                    f"❌ No ended raffle found with message ID `{message_id}`."
                 )
                 return
             await self._do_repick(ctx, entry)
@@ -992,11 +986,11 @@ class Raffle(commands.Cog):
                 and (privileged or e.get("creator_id") == ctx.author.id)
             ]
             if not ended:
-                await ctx.send(f"No ended raffles found for **{month}**.", ephemeral=True)
+                await ctx.maybe_send_embed(f"No ended raffles found for **{month}**.")
                 return
             ended = list(reversed(ended))[:25]
             view = RaffleRepickSelectView(self, ctx, ended)
-            msg = await ctx.send("Which raffle do you want to repick winners for?", view=view, ephemeral=True)
+            msg = await ctx.send("Which raffle do you want to repick winners for?", view=view)
             view.message = msg
 
     async def _do_cancel(
