@@ -91,9 +91,17 @@ class Raffle(commands.Cog):
                     if user_id in entry.get("participants", []):
                         entry["participants"].remove(user_id)
                         changed = True
-                    if user_id in entry.get("winners", []):
-                        entry["winners"].remove(user_id)
-                        changed = True
+                    winners = entry.get("winners", [])
+                    if winners and isinstance(winners[0], int):
+                        if user_id in winners:
+                            winners.remove(user_id)
+                            changed = True
+                    else:
+                        for pick in winners:
+                            ids = pick.get("ids", [])
+                            if user_id in ids:
+                                ids.remove(user_id)
+                                changed = True
                 if changed:
                     archive_path.write_text(
                         json.dumps(history, indent=2), encoding="utf-8"
@@ -123,8 +131,25 @@ class Raffle(commands.Cog):
         history.append(entry_copy)
         path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
-    def _update_archive_winners(self, guild_id: int, message_id_str: str, winner_ids: list):
-        """Overwrite the winners field for a specific archived raffle entry."""
+    @staticmethod
+    def _get_valid_winners(entry: dict) -> list[int]:
+        """Return the current valid winner IDs from an archive entry.
+
+        Handles both legacy format (plain list of ints) and new format
+        (list of {"ids": [...], "valid": bool} dicts).
+        """
+        winners = entry.get("winners", [])
+        if not winners:
+            return []
+        if isinstance(winners[0], int):
+            return winners
+        for pick in reversed(winners):
+            if pick.get("valid", True):
+                return pick.get("ids", [])
+        return []
+
+    def _append_archive_winners(self, guild_id: int, message_id_str: str, winner_ids: list):
+        """Invalidate previous winners and append a new valid pick."""
         history_dir = self._history_dir(guild_id)
         for path in history_dir.glob("*.json"):
             try:
@@ -133,10 +158,18 @@ class Raffle(commands.Cog):
                 continue
             changed = False
             for entry in history:
-                if entry.get("message_id") == message_id_str:
-                    entry["winners"] = winner_ids
-                    changed = True
-                    break
+                if entry.get("message_id") != message_id_str:
+                    continue
+                old = entry.get("winners", [])
+                if isinstance(old, list) and old and isinstance(old[0], int):
+                    old = [{"ids": old, "valid": False}]
+                else:
+                    for pick in old:
+                        pick["valid"] = False
+                old.append({"ids": winner_ids, "valid": True})
+                entry["winners"] = old
+                changed = True
+                break
             if changed:
                 path.write_text(json.dumps(history, indent=2), encoding="utf-8")
                 return
@@ -924,22 +957,28 @@ class Raffle(commands.Cog):
         """Re-pick winners from an archived ended raffle and post the result publicly."""
         participants = entry.get("participants", [])
         winner_ids = pick_winners(participants, entry["winner_count"])
+        prev_winner_ids = self._get_valid_winners(entry)
 
         creator = ctx.guild.get_member(entry["creator_id"])
         host_name = creator.display_name if creator else "Unknown"
 
+        parts = []
+        if prev_winner_ids:
+            invalid = " ".join(f"~~<@{uid}>~~" for uid in prev_winner_ids)
+            parts.append(f"Previous: {invalid}")
+
         if not winner_ids:
-            description = "No one entered this raffle."
+            parts.append("No one entered this raffle.")
         elif len(winner_ids) < entry["winner_count"]:
             mentions = " ".join(f"<@{uid}>" for uid in winner_ids)
-            description = f"All participants win!\n{mentions}"
+            parts.append(f"All participants win!\n{mentions}")
         else:
             mentions = "\n".join(f"🥇 <@{uid}>" for uid in winner_ids)
-            description = f"Congratulations to:\n{mentions}"
+            parts.append(f"Congratulations to:\n{mentions}")
 
         result_embed = discord.Embed(
             title=f"🎉 {entry['name']} — Winners (Repick)!",
-            description=description,
+            description="\n\n".join(parts),
             colour=discord.Colour.gold(),
         )
         result_embed.set_footer(
@@ -950,7 +989,7 @@ class Raffle(commands.Cog):
         except discord.HTTPException:
             pass
 
-        self._update_archive_winners(ctx.guild.id, entry["message_id"], winner_ids)
+        self._append_archive_winners(ctx.guild.id, entry["message_id"], winner_ids)
 
     @raffle.command(name="repick")
     async def raffle_repick(self, ctx: commands.Context, message_id: Optional[int] = None):
@@ -1070,11 +1109,10 @@ class Raffle(commands.Cog):
             title=f"Raffle History — {month}",
             colour=await ctx.embed_colour(),
         )
-        # Show last 10 entries
         for entry in history[-10:]:
             status_icon = "🎉" if entry["status"] == "ended" else "❌"
-            winners = entry.get("winners", [])
-            winners_str = ", ".join(f"<@{w}>" for w in winners) if winners else "None"
+            valid = self._get_valid_winners(entry)
+            winners_str = ", ".join(f"<@{w}>" for w in valid) if valid else "None"
             embed.add_field(
                 name=f"{status_icon} {entry['name']}",
                 value=(
